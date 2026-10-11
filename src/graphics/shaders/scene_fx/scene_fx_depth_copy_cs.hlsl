@@ -2,6 +2,8 @@
 // - Default: the scene depth as linear view distance over the whole scene.
 // - FX_RAW: a shadow map's stored depth as is (orthographic, already linear).
 // FX_MSAA selects the multisampled source variant.
+// A non-empty fx_pass_rect (screen pixels) limits the copy to that rectangle:
+// one tile of a predicated-tiled scene, leaving the other tiles' depth as is.
 
 #include "scene_fx_common.hlsli"
 
@@ -15,6 +17,10 @@ FX_BINDING(1) FX_FORMAT_R32F RWTexture2D<float> fx_depth : register(u0);
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
   if (any(id.xy >= fx_scene_size)) {
+    return;
+  }
+  if (fx_pass_rect.z > fx_pass_rect.x &&
+      (any(id.xy < fx_pass_rect.xy) || any(id.xy >= fx_pass_rect.zw))) {
     return;
   }
   int2 source = int2(id.xy) - fx_screen_offset;

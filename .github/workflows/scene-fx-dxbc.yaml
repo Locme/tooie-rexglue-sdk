@@ -1,0 +1,53 @@
+# Compiles the D3D12 (DXBC, shader model 5.1) bytecode of the scene effects
+# shaders with FXC, which only exists on Windows. The headers come out as the
+# "scene-fx-dxbc" artifact (and base64 in the log) to be committed by hand;
+# the SPIR-V headers are built with glslangValidator on any OS.
+name: Scene effects DXBC
+
+on:
+  push:
+    branches: ["claude/**", "banjo-**"]
+    paths:
+      - "src/graphics/shaders/scene_fx/**"
+      - ".github/workflows/scene-fx-dxbc.yaml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  dxbc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compile with FXC
+        shell: pwsh
+        run: |
+          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\fxc.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $fxc) { throw "fxc.exe not found" }
+          Write-Host "Using $($fxc.FullName)"
+          $src = "src/graphics/shaders/scene_fx"
+          $out = "dxbc"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          # Output name, source, profile, defines.
+          $shaders = @(
+            @("scene_fx_depth_copy_cs", "scene_fx_depth_copy_cs.hlsl", "cs_5_1", @()),
+            @("scene_fx_depth_copy_msaa_cs", "scene_fx_depth_copy_cs.hlsl", "cs_5_1", @("FX_MSAA")),
+            @("scene_fx_shadow_copy_cs", "scene_fx_depth_copy_cs.hlsl", "cs_5_1", @("FX_RAW"))
+          )
+          foreach ($s in $shaders) {
+            $defines = @()
+            foreach ($d in $s[3]) { $defines += "/D"; $defines += "$d=1" }
+            & $fxc.FullName /nologo /T $s[2] /E main /O3 @defines /Vn $s[0] `
+              /Fh "$out/$($s[0]).h" "$src/$($s[1])"
+            if ($LASTEXITCODE -ne 0) { throw "fxc failed on $($s[0])" }
+            $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("$out/$($s[0]).h"))
+            Write-Host "DXBC-HEADER $($s[0]) $b64"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scene-fx-dxbc
+          path: dxbc/*.h
