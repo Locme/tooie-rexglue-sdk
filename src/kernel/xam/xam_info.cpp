@@ -294,7 +294,11 @@ void XamLoaderTerminateTitle_entry() {
 }
 
 u32 XamAlloc_entry(u32 unk, u32 size, mapped_u32 out_ptr) {
-  assert_true(unk == 0);
+  // Banjo-Tooie passes a nonzero unk going from the title screen to the
+  // dashboard; the assert crashed debug builds (iron-jay/rexglue-sdk@035aa25).
+  if (unk != 0) {
+    REXKRNL_DEBUG("XamAlloc: unk={:08X} (expected 0)", unk);
+  }
 
   // Allocate from the heap. Not sure why XAM does this specially, perhaps
   // it keeps stuff in a separate heap?
