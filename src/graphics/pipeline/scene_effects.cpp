@@ -408,9 +408,14 @@ void SceneEffects::OnDraw() {
   }
   // Only depth-writing draws define the depth being resolved.
   auto depth_control = register_file_.Get<reg::RB_DEPTHCONTROL>();
-  if (!depth_control.z_enable || !depth_control.z_write_enable) {
+  if (!depth_control.z_enable) {
+    CompositeSdrSceneBeforeOverlay();
     return;
   }
+  if (!depth_control.z_write_enable) {
+    return;
+  }
+  sdr_scene_drawn_ = true;
   DrawState state;
   ReadCameraConstants(state.rows);
   auto vte_control = register_file_.Get<reg::PA_CL_VTE_CNTL>();
@@ -629,67 +634,163 @@ void SceneEffects::OnResolve() {
   }
 }
 
-void SceneEffects::ResolveSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt,
-                                       const Rect& rect, uint32_t width, uint32_t height,
-                                       int32_t screen_offset_x, int32_t screen_offset_y,
-                                       bool trace) {
-  // An 8-bit scene, UI included, resolved once per tile (predicated tiling
-  // draws the whole frame once per band of the screen, each band at the top
-  // of eDRAM): each tile gets its depth copied and the effects composited
-  // while its color is still in the render target. The effects of a tile see
-  // the other tiles' depth from where it was last copied (this frame for the
-  // tiles before, the frame before for those after).
+int32_t SceneEffects::GetSdrTile(int32_t screen_offset_x, int32_t screen_offset_y) {
   uint64_t frame = GetCurrentFrame();
   if (sdr_frame_ != frame) {
     sdr_frame_ = frame;
     sdr_tile_count_ = 0;
   }
   for (uint32_t i = 0; i < sdr_tile_count_; ++i) {
-    if (sdr_tiles_[i][0] == screen_offset_x && sdr_tiles_[i][1] == screen_offset_y) {
-      // Already done this frame (a second resolve of the same image).
-      return;
+    if (sdr_tiles_[i].offset[0] == screen_offset_x && sdr_tiles_[i].offset[1] == screen_offset_y) {
+      return int32_t(i);
     }
   }
   if (sdr_tile_count_ >= kMaxSdrTiles) {
+    return -1;
+  }
+  SdrTile& tile = sdr_tiles_[sdr_tile_count_];
+  tile.offset[0] = screen_offset_x;
+  tile.offset[1] = screen_offset_y;
+  tile.composited = false;
+  tile.resolved = false;
+  return int32_t(sdr_tile_count_++);
+}
+
+void SceneEffects::CompositeSdrSceneBeforeOverlay() {
+  // The first draw without depth testing after a tile's 3D starts its HUD and
+  // other overlays: composite the effects now, so they don't darken or fog
+  // the UI as they would at the resolve. Needs the tile's rectangle and the
+  // scene's size, from its resolve in an earlier frame.
+  if (!sdr_scene_drawn_) {
     return;
   }
-  sdr_tiles_[sdr_tile_count_][0] = screen_offset_x;
-  sdr_tiles_[sdr_tile_count_][1] = screen_offset_y;
-  ++sdr_tile_count_;
+  sdr_scene_drawn_ = false;
+  if (!REXCVAR_GET(scene_fx_sdr_scene) ||
+      render_target_cache_.GetPath() != RenderTargetCache::Path::kHostRenderTargets) {
+    return;
+  }
+  uint32_t scale_x = render_target_cache_.draw_resolution_scale_x();
+  uint32_t scale_y = render_target_cache_.draw_resolution_scale_y();
+  auto window_offset = register_file_.Get<reg::PA_SC_WINDOW_OFFSET>();
+  int32_t screen_offset_x = -int32_t(window_offset.window_x_offset) * int32_t(scale_x);
+  int32_t screen_offset_y = -int32_t(window_offset.window_y_offset) * int32_t(scale_y);
+  const SdrTileLayout* layout = nullptr;
+  for (uint32_t i = 0; i < sdr_layout_count_ && !layout; ++i) {
+    if (sdr_layout_[i].offset[0] == screen_offset_x &&
+        sdr_layout_[i].offset[1] == screen_offset_y) {
+      layout = &sdr_layout_[i];
+    }
+  }
+  if (!layout) {
+    return;
+  }
+  // Still those of the 3D draws: the render targets aren't updated for this
+  // draw yet.
+  RenderTarget* const* render_targets =
+      render_target_cache_.last_update_accumulated_render_targets();
+  RenderTarget* color_rt = render_targets[1];
+  if (!color_rt || IsHdrColorFormat(color_rt->key().GetColorFormat())) {
+    return;
+  }
+  int32_t tile = GetSdrTile(screen_offset_x, screen_offset_y);
+  if (tile < 0 || sdr_tiles_[tile].composited) {
+    return;
+  }
+  sdr_tiles_[tile].composited = true;
+  uint64_t frame = GetCurrentFrame();
+  bool trace = frame >= trace_frame_ && frame < trace_frame_end_;
+  if (trace) {
+    REXGPU_INFO("Scene effects trace: SDR scene tile at screen offset {},{}: before its overlays",
+                screen_offset_x, screen_offset_y);
+  }
+  CompositeSdrSceneTile(*color_rt, render_targets[0], layout->rect, sdr_width_, sdr_height_,
+                        screen_offset_x, screen_offset_y, trace);
+}
+
+void SceneEffects::ResolveSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt,
+                                       const Rect& rect, uint32_t width, uint32_t height,
+                                       int32_t screen_offset_x, int32_t screen_offset_y,
+                                       bool trace) {
+  // An 8-bit scene, UI included, resolved once per tile (predicated tiling
+  // draws the whole frame once per band of the screen, each band at the top
+  // of eDRAM): each tile gets the effects composited while its color is still
+  // in the render target, before its overlays (CompositeSdrSceneBeforeOverlay)
+  // or else here.
+  sdr_scene_drawn_ = false;
+  int32_t tile = GetSdrTile(screen_offset_x, screen_offset_y);
+  if (tile < 0 || sdr_tiles_[tile].resolved) {
+    // Already done this frame (a second resolve of the same image).
+    return;
+  }
+  sdr_tiles_[tile].resolved = true;
+  // Where the tile is, for compositing before the overlays from now on.
+  sdr_width_ = width;
+  sdr_height_ = height;
+  SdrTileLayout* layout = nullptr;
+  for (uint32_t i = 0; i < sdr_layout_count_ && !layout; ++i) {
+    if (sdr_layout_[i].offset[0] == screen_offset_x &&
+        sdr_layout_[i].offset[1] == screen_offset_y) {
+      layout = &sdr_layout_[i];
+    }
+  }
+  if (!layout && sdr_layout_count_ < kMaxSdrTiles) {
+    layout = &sdr_layout_[sdr_layout_count_++];
+    layout->offset[0] = screen_offset_x;
+    layout->offset[1] = screen_offset_y;
+  }
+  if (layout) {
+    layout->rect = rect;
+  }
+  if (!sdr_tiles_[tile].composited) {
+    sdr_tiles_[tile].composited = true;
+    CompositeSdrSceneTile(color_rt, depth_rt, rect, width, height, screen_offset_x,
+                          screen_offset_y, trace);
+  }
+  image_frame_ = GetCurrentFrame();
+  ApplyImageEffects(color_rt, rect, width, height, trace);
+}
+
+void SceneEffects::CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt,
+                                         const Rect& rect, uint32_t width, uint32_t height,
+                                         int32_t screen_offset_x, int32_t screen_offset_y,
+                                         bool trace) {
+  // The effects of a tile see the other tiles' depth from where it was last
+  // copied (this frame for the tiles before, the frame before for those
+  // after).
+  if (!AnySceneEffectEnabled() || !depth_rt || !width || !height) {
+    return;
+  }
+  uint64_t frame = GetCurrentFrame();
   Rect screen_rect = {rect.left + screen_offset_x, rect.top + screen_offset_y,
                       rect.right + screen_offset_x, rect.bottom + screen_offset_y};
   if (trace) {
-    REXGPU_INFO("Scene effects trace: SDR scene tile {} at {},{}-{},{} (screen)", sdr_tile_count_,
-                screen_rect.left, screen_rect.top, screen_rect.right, screen_rect.bottom);
+    REXGPU_INFO("Scene effects trace: SDR scene tile at {},{}-{},{} (screen)", screen_rect.left,
+                screen_rect.top, screen_rect.right, screen_rect.bottom);
   }
-  int32_t debug_mode = REXCVAR_GET(scene_fx_debug);
-  if (AnySceneEffectEnabled() && depth_rt) {
-    CaptureSceneDepth(*depth_rt, GetDominantDrawState(false), width, height, screen_offset_x,
-                      screen_offset_y, trace, &screen_rect);
-    if (depth_frame_ == frame) {
-      hdr_frame_ = frame;
-      ComputeEffects(color_rt, rect, screen_offset_x, screen_offset_y, trace);
-      if (REXCVAR_GET(scene_fx_gi) || REXCVAR_GET(scene_fx_reflections)) {
-        CaptureSceneColor(color_rt, rect, screen_offset_x, screen_offset_y);
-      }
-      if (debug_mode > kDebugSplit) {
-        // No later resolve to show it over: the effect alone, here.
-        Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
-                  Draw::kCompositeDebug, trace);
-        return;
-      }
-      if (ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_) {
-        Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
-                  Draw::kCompositeMultiply, trace);
-      }
-      if (fog_enabled_ || volumetrics_computed_ || reflections_computed_) {
-        Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
-                  Draw::kCompositeAdd, trace);
-      }
-    }
+  CaptureSceneDepth(*depth_rt, GetDominantDrawState(false), width, height, screen_offset_x,
+                    screen_offset_y, trace, &screen_rect);
+  if (depth_frame_ != frame) {
+    return;
   }
-  image_frame_ = frame;
-  ApplyImageEffects(color_rt, rect, width, height, trace);
+  hdr_frame_ = frame;
+  ComputeEffects(color_rt, rect, screen_offset_x, screen_offset_y, trace);
+  if (REXCVAR_GET(scene_fx_gi) || REXCVAR_GET(scene_fx_reflections)) {
+    CaptureSceneColor(color_rt, rect, screen_offset_x, screen_offset_y);
+  }
+  if (REXCVAR_GET(scene_fx_debug) > kDebugSplit) {
+    // No later resolve to show it over: the effect alone, here.
+    Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
+              Draw::kCompositeDebug, trace);
+    return;
+  }
+  if (ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_) {
+    Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
+              Draw::kCompositeMultiply, trace);
+  }
+  if (fog_enabled_ || volumetrics_computed_ || reflections_computed_) {
+    Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
+              Draw::kCompositeAdd, trace);
+  }
 }
 
 void SceneEffects::ReadCameraConstants(float rows[4][4]) const {

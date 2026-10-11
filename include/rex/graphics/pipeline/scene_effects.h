@@ -271,6 +271,13 @@ class SceneEffects {
   void ResolveSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt, const Rect& rect,
                            uint32_t width, uint32_t height, int32_t screen_offset_x,
                            int32_t screen_offset_y, bool trace);
+  void CompositeSdrSceneBeforeOverlay();
+  void CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt, const Rect& rect,
+                             uint32_t width, uint32_t height, int32_t screen_offset_x,
+                             int32_t screen_offset_y, bool trace);
+  // This frame's tile at a screen offset, added if new; -1 if there are too
+  // many.
+  int32_t GetSdrTile(int32_t screen_offset_x, int32_t screen_offset_y);
   void CaptureShadowCascade(RenderTarget& depth_rt, const DrawState& draw_state, uint32_t width,
                             uint32_t height, bool trace);
   bool IsShadowCascadeUsable(const ShadowCascade& cascade) const;
@@ -352,7 +359,23 @@ class SceneEffects {
   static constexpr uint32_t kMaxSdrTiles = 8;
   uint64_t sdr_frame_ = UINT64_MAX;
   uint32_t sdr_tile_count_ = 0;
-  int32_t sdr_tiles_[kMaxSdrTiles][2] = {};
+  struct SdrTile {
+    int32_t offset[2];
+    bool composited;
+    bool resolved;
+  };
+  SdrTile sdr_tiles_[kMaxSdrTiles] = {};
+  // The tiles' rectangles and the scene's size from their last resolves.
+  struct SdrTileLayout {
+    int32_t offset[2];
+    Rect rect;
+  };
+  SdrTileLayout sdr_layout_[kMaxSdrTiles] = {};
+  uint32_t sdr_layout_count_ = 0;
+  uint32_t sdr_width_ = 0;
+  uint32_t sdr_height_ = 0;
+  // Depth-writing draws since the last SDR composite or resolve.
+  bool sdr_scene_drawn_ = false;
   // Of the depth-writing draws since the last resolve.
   DrawState draw_states_[kMaxDrawStates] = {};
   uint32_t draw_state_count_ = 0;
