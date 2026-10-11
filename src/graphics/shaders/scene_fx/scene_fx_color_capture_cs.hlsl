@@ -5,7 +5,9 @@
 //   source) and as the surfaces' brightness when compositing. Each texel is the
 //   average of its 2x2 scene pixels.
 // - FX_FULL: the final image at full resolution, for the image effects.
-// Sample 0 of multisampled sources (FX_MSAA).
+// Sample 0 of multisampled sources (FX_MSAA), except for the final image,
+// which is the average of all samples (sample 0 alone, written back by the
+// image effects, would undo the antialiasing).
 
 #include "scene_fx_common.hlsli"
 
@@ -34,7 +36,18 @@ void main(uint3 id : SV_DispatchThreadID) {
   if (any(pixel >= int2(fx_pass_rect.zw))) {
     return;
   }
+#ifdef FX_MSAA
+  uint width, height, sample_count;
+  fx_color.GetDimensions(width, height, sample_count);
+  float3 sum = 0.0;
+  for (uint i = 0u; i < sample_count; ++i) {
+    float3 color = fx_color.Load(pixel, int(i)).rgb;
+    sum += (all(color == color) && all(color < 65504.0)) ? max(color, 0.0) : 0.0;
+  }
+  fx_captured[pixel + fx_screen_offset] = float4(sum / float(max(sample_count, 1u)), 1.0);
+#else
   fx_captured[pixel + fx_screen_offset] = float4(FxLoadColor(pixel), 1.0);
+#endif
 #else
   int2 first_texel = (int2(fx_pass_rect.xy) + fx_screen_offset) >> 1;
   int2 texel = first_texel + int2(id.xy);
