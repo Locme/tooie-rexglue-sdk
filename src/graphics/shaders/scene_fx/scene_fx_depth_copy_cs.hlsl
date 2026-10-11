@@ -3,7 +3,8 @@
 // - FX_RAW: a shadow map's stored depth as is (orthographic, already linear).
 // FX_MSAA selects the multisampled source variant.
 // A non-empty fx_pass_rect (screen pixels) limits the copy to that rectangle:
-// one tile of a predicated-tiled scene, leaving the other tiles' depth as is.
+// one tile of a predicated-tiled scene, keeping the tiles above (copied
+// before it) and emptying those below (not drawn yet).
 
 #include "scene_fx_common.hlsli"
 
@@ -19,9 +20,19 @@ void main(uint3 id : SV_DispatchThreadID) {
   if (any(id.xy >= fx_scene_size)) {
     return;
   }
-  if (fx_pass_rect.z > fx_pass_rect.x &&
-      (any(id.xy < fx_pass_rect.xy) || any(id.xy >= fx_pass_rect.zw))) {
-    return;
+  if (fx_pass_rect.z > fx_pass_rect.x) {
+    if (any(id.xy < fx_pass_rect.xy) || id.x >= fx_pass_rect.z) {
+      return;
+    }
+#ifndef FX_RAW
+    if (id.y >= fx_pass_rect.w) {
+      // The tiles below aren't drawn yet this frame: what they hold is the
+      // previous frame's depth, which no longer lines up with this tile's
+      // (dark lines along the tile edges). Empty until they're copied.
+      fx_depth[id.xy] = 1.0e6;
+      return;
+    }
+#endif
   }
   int2 source = int2(id.xy) - fx_screen_offset;
 #ifdef FX_MSAA

@@ -93,24 +93,30 @@ def main():
     parser.add_argument("--glslang", default="glslangValidator",
                         help="glslangValidator: a path, or a name looked up on PATH "
                              "(default: glslangValidator)")
+    parser.add_argument("--dxbc-only", action="store_true",
+                        help="build only the Direct3D 12 headers (FXC, Windows)")
+    parser.add_argument("--spirv-only", action="store_true",
+                        help="build only the Vulkan headers (glslangValidator, any OS)")
     args = parser.parse_args()
-    fxc = find_tool(args.fxc, "--fxc")
-    glslang = find_tool(args.glslang, "--glslang")
+    fxc = None if args.spirv_only else find_tool(args.fxc, "--fxc")
+    glslang = None if args.dxbc_only else find_tool(args.glslang, "--glslang")
 
     for name, source, stage, defines in VARIANTS:
         source_path = SOURCES / source
         # Direct3D 12: shader model 5.1, the header holds a byte array `name`.
-        run([fxc, "/nologo", "/O3", "/T", f"{stage}_5_1", "/E", "main",
-             *[f"/D{define}=1" for define in defines],
-             "/Vn", name, "/Fh", DXBC_OUT / f"{name}.h", source_path])
+        if fxc:
+            run([fxc, "/nologo", "/O3", "/T", f"{stage}_5_1", "/E", "main",
+                 *[f"/D{define}=1" for define in defines],
+                 "/Vn", name, "/Fh", DXBC_OUT / f"{name}.h", source_path])
+            normalize_line_endings(DXBC_OUT / f"{name}.h")
         # Vulkan: the same HLSL as SPIR-V (-D: HLSL input). SCENE_FX_VULKAN
         # selects the Vulkan bindings in scene_fx_common.hlsli.
-        run([glslang, "-D", "-V", "--target-env", "vulkan1.0",
-             "-S", GLSLANG_STAGE[stage], "-e", "main", "-DSCENE_FX_VULKAN=1",
-             *[f"-D{define}=1" for define in defines],
-             "--vn", name, "-o", SPIRV_OUT / f"{name}.h", source_path])
-        normalize_line_endings(DXBC_OUT / f"{name}.h")
-        normalize_line_endings(SPIRV_OUT / f"{name}.h")
+        if glslang:
+            run([glslang, "-D", "-V", "--target-env", "vulkan1.0",
+                 "-S", GLSLANG_STAGE[stage], "-e", "main", "-DSCENE_FX_VULKAN=1",
+                 *[f"-D{define}=1" for define in defines],
+                 "--vn", name, "-o", SPIRV_OUT / f"{name}.h", source_path])
+            normalize_line_endings(SPIRV_OUT / f"{name}.h")
         print(f"built {name}")
 
 
