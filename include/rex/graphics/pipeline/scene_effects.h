@@ -267,8 +267,7 @@ class SceneEffects {
   // target bound at the color resolve) and takes its camera.
   void CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* scene_state, uint32_t width,
                          uint32_t height, int32_t screen_offset_x, int32_t screen_offset_y,
-                         bool trace, const Rect* screen_rect = nullptr,
-                         bool fill_sky_only = false);
+                         bool trace, const Rect* screen_rect = nullptr);
   void ResolveSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt, const Rect& rect,
                            uint32_t width, uint32_t height, int32_t screen_offset_x,
                            int32_t screen_offset_y, bool trace);

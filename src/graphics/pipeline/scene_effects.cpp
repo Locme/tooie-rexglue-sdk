@@ -282,7 +282,6 @@ constexpr uint32_t kEffectGi = 4;
 constexpr uint32_t kEffectFog = 8;
 constexpr uint32_t kEffectContactShadows = 16;
 constexpr uint32_t kEffectReflections = 32;
-constexpr uint32_t kDepthFillSky = 64;
 constexpr int32_t kDebugSplit = 1;
 constexpr uint32_t kCompositeMultiply = 0;
 constexpr uint32_t kCompositeAdd = 1;
@@ -839,10 +838,15 @@ void SceneEffects::CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* d
     REXGPU_INFO("Scene effects trace: SDR scene tile at {},{}-{},{} (screen)", screen_rect.left,
                 screen_rect.top, screen_rect.right, screen_rect.bottom);
   }
+  // The depth from before the tile's see-through draws, when it was taken
+  // (CaptureSdrSceneDepthBeforeBlending): what they drew over the sky since
+  // stays sky. (A copy mode adding only the pixels still sky read the depth
+  // texture it writes, and that broke the depth on Vulkan.)
   int32_t tile = GetSdrTile(screen_offset_x, screen_offset_y);
-  CaptureSceneDepth(*depth_rt, GetDominantDrawState(false), width, height, screen_offset_x,
-                    screen_offset_y, trace, &screen_rect,
-                    tile >= 0 && sdr_tiles_[tile].depth_captured);
+  if (tile < 0 || !sdr_tiles_[tile].depth_captured) {
+    CaptureSceneDepth(*depth_rt, GetDominantDrawState(false), width, height, screen_offset_x,
+                      screen_offset_y, trace, &screen_rect);
+  }
   if (depth_frame_ != frame) {
     return;
   }
@@ -970,7 +974,7 @@ bool SceneEffects::IsPerspective(const float rows[4][4]) {
 void SceneEffects::CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* scene_state,
                                      uint32_t width, uint32_t height, int32_t screen_offset_x,
                                      int32_t screen_offset_y, bool trace,
-                                     const Rect* screen_rect, bool fill_sky_only) {
+                                     const Rect* screen_rect) {
   if (!EnsureSceneTextures(width, height)) {
     return;
   }
@@ -999,9 +1003,6 @@ void SceneEffects::CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* sc
     constants.pass_rect[1] = uint32_t(std::max(screen_rect->top, 0));
     constants.pass_rect[2] = uint32_t(std::max(screen_rect->right, 0));
     constants.pass_rect[3] = uint32_t(std::max(screen_rect->bottom, 0));
-  }
-  if (fill_sky_only) {
-    constants.effect_flags |= kDepthFillSky;
   }
   bool msaa = depth_rt.key().msaa_samples != xenos::MsaaSamples::k1X;
   if (Dispatch(msaa ? Pipeline::kDepthCopyMsaa : Pipeline::kDepthCopy, {Source(&depth_rt)},
