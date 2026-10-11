@@ -279,6 +279,18 @@ void GetHostViewportInfo(const RegisterFile& regs, uint32_t draw_resolution_scal
                          bool full_float24_in_0_to_1, bool pixel_shader_writes_depth,
                          ViewportInfo& viewport_info_out);
 
+// Narrows a screen-space 2D draw (a HUD element) horizontally about the
+// screen's center by rex::system::GetScreenSpaceDrawScale, for games that
+// widen their camera to the window but draw their HUD for the original
+// aspect. A draw is screen-space 2D when it's auto-indexed, its first vertex
+// binding starts with a float4 position (which the game's vertex shaders
+// pass through), and every vertex has w = 1 and |x| < 1: vertices with w != 1
+// are perspective (the 3D scene), and quads touching the screen's edges
+// (fades, full-screen overlays) are left to cover the whole screen.
+void ApplyScreenSpaceDrawScale(const RegisterFile& regs, const memory::Memory& memory,
+                               const Shader& vertex_shader, uint32_t index_count,
+                               ViewportInfo& viewport_info);
+
 struct Scissor {
   // Offset from render target UV = 0 to +UV.
   uint32_t offset[2];

@@ -267,7 +267,10 @@ class SceneEffects {
   // target bound at the color resolve) and takes its camera.
   void CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* scene_state, uint32_t width,
                          uint32_t height, int32_t screen_offset_x, int32_t screen_offset_y,
-                         bool trace);
+                         bool trace, const Rect* screen_rect = nullptr);
+  void ResolveSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt, const Rect& rect,
+                           uint32_t width, uint32_t height, int32_t screen_offset_x,
+                           int32_t screen_offset_y, bool trace);
   void CaptureShadowCascade(RenderTarget& depth_rt, const DrawState& draw_state, uint32_t width,
                             uint32_t height, bool trace);
   bool IsShadowCascadeUsable(const ShadowCascade& cascade) const;
@@ -342,6 +345,14 @@ class SceneEffects {
   // The camera of the previous frame with effects, for reprojection.
   float previous_camera_[4][4] = {};
   bool previous_camera_valid_ = false;
+  // The camera of the frame being drawn, previous_camera_ from the next one.
+  float frame_camera_[4][4] = {};
+  bool frame_camera_valid_ = false;
+  // Tiles of the SDR scene done this frame (screen offsets).
+  static constexpr uint32_t kMaxSdrTiles = 8;
+  uint64_t sdr_frame_ = UINT64_MAX;
+  uint32_t sdr_tile_count_ = 0;
+  int32_t sdr_tiles_[kMaxSdrTiles][2] = {};
   // Of the depth-writing draws since the last resolve.
   DrawState draw_states_[kMaxDrawStates] = {};
   uint32_t draw_state_count_ = 0;

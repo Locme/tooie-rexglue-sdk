@@ -28,7 +28,7 @@
 //   float fx_ao_albedo;                // Offset:   84 Size:     4 [unused]
 //   float fx_ao_max_pixels;            // Offset:   88 Size:     4 [unused]
 //   uint fx_effect_flags;              // Offset:   92 Size:     4 [unused]
-//   uint4 fx_pass_rect;                // Offset:   96 Size:    16 [unused]
+//   uint4 fx_pass_rect;                // Offset:   96 Size:    16
 //   float fx_gi_intensity;             // Offset:  112 Size:     4 [unused]
 //   uint fx_composite_mode;            // Offset:  116 Size:     4 [unused]
 //   uint fx_effect_scale;              // Offset:  120 Size:     4 [unused]
@@ -60,7 +60,7 @@
 // no Output
 cs_5_1
 dcl_globalFlags refactoringAllowed
-dcl_constantbuffer CB0[0:0][2], immediateIndexed, space=0
+dcl_constantbuffer CB0[0:0][7], immediateIndexed, space=0
 dcl_resource_texture2dms(0) (float,float,float,float) T0[0:0], space=0
 dcl_uav_typed_texture2d (float,float,float,float) U0[0:0], space=0
 dcl_input vThreadID.xy
@@ -68,6 +68,16 @@ dcl_temps 1
 dcl_thread_group 8, 8, 1
 uge r0.xy, vThreadID.xyxx, CB0[0][1].xyxx
 or r0.x, r0.y, r0.x
+if_nz r0.x
+  ret 
+endif 
+ult r0.x, CB0[0][6].x, CB0[0][6].z
+ult r0.yz, vThreadID.xxyx, CB0[0][6].xxyx
+or r0.y, r0.z, r0.y
+uge r0.zw, vThreadID.xxxy, CB0[0][6].zzzw
+or r0.z, r0.w, r0.z
+or r0.y, r0.z, r0.y
+and r0.x, r0.y, r0.x
 if_nz r0.x
   ret 
 endif 
@@ -81,20 +91,20 @@ min r0.x, r0.x, l(1000000.000000)
 movc r0.x, r0.y, r0.x, l(1000000.000000)
 store_uav_typed U0[0].xyzw, vThreadID.xyyy, r0.xxxx
 ret 
-// Approximately 15 instruction slots used
+// Approximately 25 instruction slots used
 #endif
 
 const BYTE scene_fx_depth_copy_msaa_cs[] =
 {
-     68,  88,  66,  67,  69, 166, 
-     89, 119,  68,  76, 115, 235, 
-    230, 173, 122,  80, 127, 205, 
-    102, 232,   1,   0,   0,   0, 
-    116,  10,   0,   0,   5,   0, 
+     68,  88,  66,  67,  96, 146, 
+    221, 236, 134,  15, 213, 246, 
+     58, 161, 245,  78, 157,  67, 
+     29, 159,   1,   0,   0,   0, 
+    100,  11,   0,   0,   5,   0, 
       0,   0,  52,   0,   0,   0, 
     172,   7,   0,   0, 188,   7, 
       0,   0, 204,   7,   0,   0, 
-    216,   9,   0,   0,  82,  68, 
+    200,  10,   0,   0,  82,  68, 
      69,  70, 112,   7,   0,   0, 
       1,   0,   0,   0, 212,   0, 
       0,   0,   3,   0,   0,   0, 
@@ -270,7 +280,7 @@ const BYTE scene_fx_depth_copy_msaa_cs[] =
       0,   0, 255, 255, 255, 255, 
       0,   0,   0,   0, 201,   6, 
       0,   0,  96,   0,   0,   0, 
-     16,   0,   0,   0,   0,   0, 
+     16,   0,   0,   0,   2,   0, 
       0,   0, 220,   6,   0,   0, 
       0,   0,   0,   0, 255, 255, 
     255, 255,   0,   0,   0,   0, 
@@ -419,13 +429,13 @@ const BYTE scene_fx_depth_copy_msaa_cs[] =
      79,  83,  71,  78,   8,   0, 
       0,   0,   0,   0,   0,   0, 
       8,   0,   0,   0,  83,  72, 
-     69,  88,   4,   2,   0,   0, 
-     81,   0,   5,   0, 129,   0, 
+     69,  88, 244,   2,   0,   0, 
+     81,   0,   5,   0, 189,   0, 
       0,   0, 106,   8,   0,   1, 
      89,   0,   0,   7,  70, 142, 
      48,   0,   0,   0,   0,   0, 
       0,   0,   0,   0,   0,   0, 
-      0,   0,   2,   0,   0,   0, 
+      0,   0,   7,   0,   0,   0, 
       0,   0,   0,   0,  88,  32, 
       0,   7,  70, 126,  48,   0, 
       0,   0,   0,   0,   0,   0, 
@@ -447,6 +457,46 @@ const BYTE scene_fx_depth_copy_msaa_cs[] =
      70, 128,  48,   0,   0,   0, 
       0,   0,   0,   0,   0,   0, 
       1,   0,   0,   0,  60,   0, 
+      0,   7,  18,   0,  16,   0, 
+      0,   0,   0,   0,  26,   0, 
+     16,   0,   0,   0,   0,   0, 
+     10,   0,  16,   0,   0,   0, 
+      0,   0,  31,   0,   4,   3, 
+     10,   0,  16,   0,   0,   0, 
+      0,   0,  62,   0,   0,   1, 
+     21,   0,   0,   1,  79,   0, 
+      0,  11,  18,   0,  16,   0, 
+      0,   0,   0,   0,  10, 128, 
+     48,   0,   0,   0,   0,   0, 
+      0,   0,   0,   0,   6,   0, 
+      0,   0,  42, 128,  48,   0, 
+      0,   0,   0,   0,   0,   0, 
+      0,   0,   6,   0,   0,   0, 
+     79,   0,   0,   8,  98,   0, 
+     16,   0,   0,   0,   0,   0, 
+      6,   1,   2,   0,   6, 129, 
+     48,   0,   0,   0,   0,   0, 
+      0,   0,   0,   0,   6,   0, 
+      0,   0,  60,   0,   0,   7, 
+     34,   0,  16,   0,   0,   0, 
+      0,   0,  42,   0,  16,   0, 
+      0,   0,   0,   0,  26,   0, 
+     16,   0,   0,   0,   0,   0, 
+     80,   0,   0,   8, 194,   0, 
+     16,   0,   0,   0,   0,   0, 
+      6,   4,   2,   0, 166, 142, 
+     48,   0,   0,   0,   0,   0, 
+      0,   0,   0,   0,   6,   0, 
+      0,   0,  60,   0,   0,   7, 
+     66,   0,  16,   0,   0,   0, 
+      0,   0,  58,   0,  16,   0, 
+      0,   0,   0,   0,  42,   0, 
+     16,   0,   0,   0,   0,   0, 
+     60,   0,   0,   7,  34,   0, 
+     16,   0,   0,   0,   0,   0, 
+     42,   0,  16,   0,   0,   0, 
+      0,   0,  26,   0,  16,   0, 
+      0,   0,   0,   0,   1,   0, 
       0,   7,  18,   0,  16,   0, 
       0,   0,   0,   0,  26,   0, 
      16,   0,   0,   0,   0,   0, 
@@ -507,12 +557,12 @@ const BYTE scene_fx_depth_copy_msaa_cs[] =
       6,   0,  16,   0,   0,   0, 
       0,   0,  62,   0,   0,   1, 
      83,  84,  65,  84, 148,   0, 
-      0,   0,  15,   0,   0,   0, 
+      0,   0,  25,   0,   0,   0, 
       1,   0,   0,   0,   0,   0, 
       0,   0,   1,   0,   0,   0, 
       4,   0,   0,   0,   1,   0, 
-      0,   0,   2,   0,   0,   0, 
-      2,   0,   0,   0,   1,   0, 
+      0,   0,   9,   0,   0,   0, 
+      3,   0,   0,   0,   2,   0, 
       0,   0,   0,   0,   0,   0, 
       0,   0,   0,   0,   0,   0, 
       0,   0,   0,   0,   0,   0, 

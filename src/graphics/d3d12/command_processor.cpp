@@ -2465,6 +2465,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
     previous_viewport_info_ = viewport_info;
     viewport_cache_valid_ = true;
   }
+  draw_util::ApplyScreenSpaceDrawScale(regs, *memory_, *vertex_shader, index_count, viewport_info);
 
   draw_util::Scissor scissor;
   draw_util::GetScissor(regs, scissor);

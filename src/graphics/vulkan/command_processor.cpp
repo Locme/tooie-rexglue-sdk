@@ -3944,6 +3944,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
       normalized_depth_control,
       host_render_targets_used && render_target_cache_->depth_float24_convert_in_pixel_shader(),
       host_render_targets_used, pixel_shader && pixel_shader->writes_depth(), viewport_info);
+  draw_util::ApplyScreenSpaceDrawScale(regs, *memory_, *vertex_shader, index_count, viewport_info);
 
   // Update dynamic graphics pipeline state.
   UpdateDynamicState(viewport_info, primitive_polygonal, normalized_depth_control);

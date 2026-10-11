@@ -24,6 +24,7 @@
 #include <rex/logging.h>
 #include <rex/math.h>
 #include <rex/memory.h>
+#include <rex/system/screen_space_draws.h>
 #include <rex/ui/graphics_util.h>
 
 REXCVAR_DEFINE_BOOL(half_pixel_offset, true, "GPU", "Enable half pixel offset");
@@ -528,6 +529,47 @@ void GetHostViewportInfo(const RegisterFile& regs, uint32_t draw_resolution_scal
     viewport_info_out.ndc_scale[i] = ndc_scale[i];
     viewport_info_out.ndc_offset[i] = ndc_offset[i];
   }
+}
+
+void ApplyScreenSpaceDrawScale(const RegisterFile& regs, const memory::Memory& memory,
+                               const Shader& vertex_shader, uint32_t index_count,
+                               ViewportInfo& viewport_info) {
+  float x_scale = rex::system::GetScreenSpaceDrawScale();
+  // HUD elements are small quads; the cap bounds the cost of the check.
+  constexpr uint32_t kMaxVertices = 1024;
+  if (x_scale == 1.0f || !index_count || index_count > kMaxVertices ||
+      regs.Get<reg::VGT_DRAW_INITIATOR>().source_select != xenos::SourceSelect::kAutoIndex) {
+    return;
+  }
+  const auto& bindings = vertex_shader.vertex_bindings();
+  if (bindings.empty() || bindings[0].attributes.empty()) {
+    return;
+  }
+  const Shader::VertexBinding& binding = bindings[0];
+  const auto& position = binding.attributes[0].fetch_instr.attributes;
+  if (position.data_format != xenos::VertexFormat::k_32_32_32_32_FLOAT || position.offset != 0 ||
+      binding.stride_words < 4) {
+    return;
+  }
+  xenos::xe_gpu_vertex_fetch_t fetch = regs.GetVertexFetch(binding.fetch_constant);
+  if (fetch.type != xenos::FetchConstantType::kVertex) {
+    return;
+  }
+  uint32_t first = regs.Get<reg::VGT_INDX_OFFSET>().indx_offset;
+  if (uint64_t(first + index_count) * binding.stride_words > fetch.size) {
+    return;
+  }
+  const uint32_t* vertices = memory.TranslatePhysical<const uint32_t*>(fetch.address << 2);
+  for (uint32_t i = first; i < first + index_count; ++i) {
+    const uint32_t* vertex = vertices + size_t(i) * binding.stride_words;
+    float x = xenos::GpuSwap(*reinterpret_cast<const float*>(&vertex[0]), fetch.endian);
+    float w = xenos::GpuSwap(*reinterpret_cast<const float*>(&vertex[3]), fetch.endian);
+    if (w != 1.0f || !(std::abs(x) < 0.999f)) {
+      return;
+    }
+  }
+  // Guest NDC 0 (the screen's center) stays at ndc_offset.
+  viewport_info.ndc_scale[0] *= x_scale;
 }
 
 void GetScissor(const RegisterFile& regs, Scissor& scissor_out, bool clamp_to_surface_pitch) {

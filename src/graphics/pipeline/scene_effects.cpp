@@ -29,12 +29,12 @@ REXCVAR_DEFINE_INT32(scene_fx_ao_quality, 2, "GPU/Effects",
                      "Ambient occlusion quality: 0 = low, 1 = medium, 2 = high, 3 = ultra")
     .range(0, 3) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_ao_radius, 1.5, "GPU/Effects",
-                      "Ambient occlusion radius in world units (meters)")
+                      "Ambient occlusion radius in meters (see scene_fx_world_scale)")
     .range(0.1, 10.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_ao_strength, 1.0, "GPU/Effects", "Ambient occlusion strength")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_ao_thickness, 0.5, "GPU/Effects",
-                      "Assumed occluder thickness in world units - lower reduces darkening "
+                      "Assumed occluder thickness in meters - lower reduces darkening "
                       "behind thin objects")
     .range(0.01, 5.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_ao_power, 1.5, "GPU/Effects", "Ambient occlusion contrast")
@@ -59,10 +59,10 @@ REXCVAR_DEFINE_BOOL(scene_fx_contact_shadows, true, "GPU/Effects",
                     "Contact shadows: fine sun shadows the game's shadow maps miss")
     REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_contact_shadows_length, 0.5, "GPU/Effects",
-                      "Contact shadow ray length in world units")
+                      "Contact shadow ray length in meters")
     .range(0.05, 3.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_contact_shadows_thickness, 0.3, "GPU/Effects",
-                      "Assumed thickness of what casts contact shadows, in world units")
+                      "Assumed thickness of what casts contact shadows, in meters")
     .range(0.02, 2.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_contact_shadows_strength, 0.6, "GPU/Effects",
                       "Contact shadow darkness")
@@ -82,10 +82,10 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_reflections_reflectance, 0.04, "GPU/Effects",
                       "Reflectance seen head-on (Fresnel F0) - more makes everything shinier")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_reflections_distance, 30.0, "GPU/Effects",
-                      "Longest reflected distance, in world units")
+                      "Longest reflected distance, in meters")
     .range(1.0, 200.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_reflections_thickness, 0.5, "GPU/Effects",
-                      "Assumed thickness of reflected objects, in world units")
+                      "Assumed thickness of reflected objects, in meters")
     .range(0.05, 5.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_reflections_floors_only, false, "GPU/Effects",
                     "Reflect only on upward-facing surfaces (floors, wet streets)")
@@ -102,13 +102,13 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_volumetrics_intensity, 1.0, "GPU/Effects",
                       "Light shaft brightness, relative to the sky's")
     .range(0.0, 8.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_volumetrics_density, 0.004, "GPU/Effects",
-                      "Haze the light shafts are seen in, per world unit (the fog adds to it)")
+                      "Haze the light shafts are seen in, per meter (the fog adds to it)")
     .range(0.0, 0.1) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_volumetrics_anisotropy, 0.6, "GPU/Effects",
                       "How much the air scatters light forward (glow toward the sun)")
     .range(0.0, 0.95) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_volumetrics_distance, 120.0, "GPU/Effects",
-                      "Distance the light shafts extend to, in world units")
+                      "Distance the light shafts extend to, in meters")
     .range(10.0, 1000.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_volumetrics_temporal, true, "GPU/Effects",
                     "Accumulate the light shafts over frames (smoother, less noise)")
@@ -124,16 +124,16 @@ REXCVAR_DEFINE_STRING(scene_fx_sun_tint, "1.0,0.9,0.75", "GPU/Effects",
 REXCVAR_DEFINE_BOOL(scene_fx_fog, true, "GPU/Effects",
                     "Height fog lit by the sky, with a glow toward the sun") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_fog_density, 0.0005, "GPU/Effects",
-                      "Fog density everywhere, per world unit")
+                      "Fog density everywhere, per meter")
     .range(0.0, 0.1) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_fog_ground_density, 0.003, "GPU/Effects",
-                      "Ground fog density at its height, per world unit")
+                      "Ground fog density at its height, per meter")
     .range(0.0, 0.5) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_fog_ground_height, -2.0, "GPU/Effects",
-                      "Height of the ground fog relative to the camera, in world units")
+                      "Height of the ground fog relative to the camera, in meters")
     .range(-50.0, 50.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_fog_ground_falloff, 0.15, "GPU/Effects",
-                      "How quickly the ground fog thins out with height, per world unit")
+                      "How quickly the ground fog thins out with height, per meter")
     .range(0.01, 5.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_fog_brightness, 1.0, "GPU/Effects",
                       "Fog brightness relative to the sky")
@@ -142,7 +142,7 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_fog_sun_glow, 0.5, "GPU/Effects",
                       "Sunlight the fog scatters (glow toward the sun)")
     .range(0.0, 4.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_fog_distance, 1000.0, "GPU/Effects",
-                      "Distance of the sky through the fog, in world units")
+                      "Distance of the sky through the fog, in meters")
     .range(50.0, 20000.0) REX_SCENE_FX_LIVE;
 
 // Image.
@@ -189,6 +189,11 @@ REXCVAR_DEFINE_INT32(scene_fx_world_constant, 4, "GPU/Effects",
                      "world transform rows, which the camera constants include and are freed "
                      "of (-1: the camera constants are the view-projection alone)")
     .range(-1, 253) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_world_scale, 1.0, "GPU/Effects",
+                      "Guest world units per meter: every distance, length and density of "
+                      "the effects is given in meters and scaled by this (Fable II: 1; "
+                      "N64-era games use about 100)")
+    .range(0.001, 10000.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_sdr_scene, false, "GPU/Effects",
                     "The scene is drawn to an 8-bit (non-HDR) color target: composite the "
                     "effects at its resolve, taking the depth from the depth target bound "
@@ -309,6 +314,13 @@ float Length3(const float* v) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2
 float Dot3(const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
 uint32_t EffectSize(uint32_t size, uint32_t scale) { return (size + scale - 1) / scale; }
+
+// A length in the effects' meters, in guest world units.
+float WorldLength(double meters) { return float(meters * REXCVAR_GET(scene_fx_world_scale)); }
+// A density (per meter), per guest world unit.
+float WorldDensity(double per_meter) {
+  return float(per_meter / REXCVAR_GET(scene_fx_world_scale));
+}
 
 }  // namespace
 
@@ -471,7 +483,7 @@ void SceneEffects::OnResolve() {
     trace_frame_ = UINT64_MAX;
     rex::cvar::SetFlagByName("scene_fx_trace", "false");
   }
-  bool trace = frame >= trace_frame_ && frame < trace_frame_end_;
+  bool trace = (frame >= trace_frame_ && frame < trace_frame_end_);
 
   bool scene_effects = AnySceneEffectEnabled();
   int32_t debug_mode = REXCVAR_GET(scene_fx_debug);
@@ -534,23 +546,6 @@ void SceneEffects::OnResolve() {
     return;
   }
 
-  // An SDR scene whose depth the game never resolves: the depth target bound
-  // with the color being resolved is the scene's.
-  bool sdr_scene = REXCVAR_GET(scene_fx_sdr_scene) &&
-                   !IsHdrColorFormat(source_rt->key().GetColorFormat()) &&
-                   dest_pitch.copy_dest_pitch >= 640 && dest_pitch.copy_dest_height >= 360;
-  if (sdr_scene && scene_effects && depth_frame_ != frame && render_targets[0]) {
-    CaptureSceneDepth(*render_targets[0], GetDominantDrawState(false), width, height,
-                      screen_offset_x, screen_offset_y, trace);
-  }
-
-  // Color resolves after the scene depth in the same frame.
-  if (depth_frame_ != frame) {
-    if (trace) {
-      REXGPU_INFO("Scene effects trace: no scene depth this frame yet");
-    }
-    return;
-  }
   // The resolved region in render target pixels: the scissor, moved by the
   // window offset.
   auto scissor_tl = register_file_.Get<reg::PA_SC_WINDOW_SCISSOR_TL>();
@@ -567,9 +562,25 @@ void SceneEffects::OnResolve() {
     return;
   }
 
-  if (IsHdrColorFormat(source_rt->key().GetColorFormat()) || (sdr_scene && hdr_frame_ != frame)) {
-    // HDR color of the scene (or the first scene-sized SDR color with
-    // scene_fx_sdr_scene): composite the effects before it's resolved, so
+  // An SDR scene whose depth the game never resolves: the depth target bound
+  // with the color being resolved is the scene's.
+  if (REXCVAR_GET(scene_fx_sdr_scene) && !IsHdrColorFormat(source_rt->key().GetColorFormat()) &&
+      dest_pitch.copy_dest_pitch >= 640 && dest_pitch.copy_dest_height >= 360) {
+    ResolveSdrSceneTile(*source_rt, render_targets[0], rect, width, height, screen_offset_x,
+                        screen_offset_y, trace);
+    return;
+  }
+
+  // Color resolves after the scene depth in the same frame.
+  if (depth_frame_ != frame) {
+    if (trace) {
+      REXGPU_INFO("Scene effects trace: no scene depth this frame yet");
+    }
+    return;
+  }
+
+  if (IsHdrColorFormat(source_rt->key().GetColorFormat())) {
+    // HDR color of the scene: composite the effects before it's resolved, so
     // the guest's own post-processing (bloom, exposure, tonemapping) and UI
     // come on top.
     if (width != scene_width_ || height != scene_height_) {
@@ -601,12 +612,6 @@ void SceneEffects::OnResolve() {
       Composite(*source_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
                 Draw::kCompositeAdd, trace);
     }
-    if (sdr_scene) {
-      // An SDR scene is usually resolved once, UI included: the image
-      // effects go here, as no later resolve may come.
-      image_frame_ = frame;
-      ApplyImageEffects(*source_rt, rect, width, height, trace);
-    }
     return;
   }
 
@@ -622,6 +627,69 @@ void SceneEffects::OnResolve() {
     Composite(*source_rt, rect, 0, 0, float(scene_width_) / float(width),
               float(scene_height_) / float(height), Draw::kCompositeDebug, trace);
   }
+}
+
+void SceneEffects::ResolveSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt,
+                                       const Rect& rect, uint32_t width, uint32_t height,
+                                       int32_t screen_offset_x, int32_t screen_offset_y,
+                                       bool trace) {
+  // An 8-bit scene, UI included, resolved once per tile (predicated tiling
+  // draws the whole frame once per band of the screen, each band at the top
+  // of eDRAM): each tile gets its depth copied and the effects composited
+  // while its color is still in the render target. The effects of a tile see
+  // the other tiles' depth from where it was last copied (this frame for the
+  // tiles before, the frame before for those after).
+  uint64_t frame = GetCurrentFrame();
+  if (sdr_frame_ != frame) {
+    sdr_frame_ = frame;
+    sdr_tile_count_ = 0;
+  }
+  for (uint32_t i = 0; i < sdr_tile_count_; ++i) {
+    if (sdr_tiles_[i][0] == screen_offset_x && sdr_tiles_[i][1] == screen_offset_y) {
+      // Already done this frame (a second resolve of the same image).
+      return;
+    }
+  }
+  if (sdr_tile_count_ >= kMaxSdrTiles) {
+    return;
+  }
+  sdr_tiles_[sdr_tile_count_][0] = screen_offset_x;
+  sdr_tiles_[sdr_tile_count_][1] = screen_offset_y;
+  ++sdr_tile_count_;
+  Rect screen_rect = {rect.left + screen_offset_x, rect.top + screen_offset_y,
+                      rect.right + screen_offset_x, rect.bottom + screen_offset_y};
+  if (trace) {
+    REXGPU_INFO("Scene effects trace: SDR scene tile {} at {},{}-{},{} (screen)", sdr_tile_count_,
+                screen_rect.left, screen_rect.top, screen_rect.right, screen_rect.bottom);
+  }
+  int32_t debug_mode = REXCVAR_GET(scene_fx_debug);
+  if (AnySceneEffectEnabled() && depth_rt) {
+    CaptureSceneDepth(*depth_rt, GetDominantDrawState(false), width, height, screen_offset_x,
+                      screen_offset_y, trace, &screen_rect);
+    if (depth_frame_ == frame) {
+      hdr_frame_ = frame;
+      ComputeEffects(color_rt, rect, screen_offset_x, screen_offset_y, trace);
+      if (REXCVAR_GET(scene_fx_gi) || REXCVAR_GET(scene_fx_reflections)) {
+        CaptureSceneColor(color_rt, rect, screen_offset_x, screen_offset_y);
+      }
+      if (debug_mode > kDebugSplit) {
+        // No later resolve to show it over: the effect alone, here.
+        Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
+                  Draw::kCompositeDebug, trace);
+        return;
+      }
+      if (ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_) {
+        Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
+                  Draw::kCompositeMultiply, trace);
+      }
+      if (fog_enabled_ || volumetrics_computed_ || reflections_computed_) {
+        Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
+                  Draw::kCompositeAdd, trace);
+      }
+    }
+  }
+  image_frame_ = frame;
+  ApplyImageEffects(color_rt, rect, width, height, trace);
 }
 
 void SceneEffects::ReadCameraConstants(float rows[4][4]) const {
@@ -726,7 +794,8 @@ bool SceneEffects::IsPerspective(const float rows[4][4]) {
 
 void SceneEffects::CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* scene_state,
                                      uint32_t width, uint32_t height, int32_t screen_offset_x,
-                                     int32_t screen_offset_y, bool trace) {
+                                     int32_t screen_offset_y, bool trace,
+                                     const Rect* screen_rect) {
   if (!EnsureSceneTextures(width, height)) {
     return;
   }
@@ -749,6 +818,13 @@ void SceneEffects::CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* sc
   scene_height_ = height;
   FxConstants constants;
   FillConstants(&constants, screen_offset_x, screen_offset_y);
+  if (screen_rect) {
+    // Only this tile: the others keep the depth they were last given.
+    constants.pass_rect[0] = uint32_t(std::max(screen_rect->left, 0));
+    constants.pass_rect[1] = uint32_t(std::max(screen_rect->top, 0));
+    constants.pass_rect[2] = uint32_t(std::max(screen_rect->right, 0));
+    constants.pass_rect[3] = uint32_t(std::max(screen_rect->bottom, 0));
+  }
   bool msaa = depth_rt.key().msaa_samples != xenos::MsaaSamples::k1X;
   if (Dispatch(msaa ? Pipeline::kDepthCopyMsaa : Pipeline::kDepthCopy, {Source(&depth_rt)},
                {Target(Texture::kDepth)}, &constants, nullptr, 0, width, height)) {
@@ -904,9 +980,9 @@ void SceneEffects::FillConstants(void* constants_out, int32_t screen_offset_x,
   constants.scene_size[1] = scene_height_;
   constants.screen_offset[0] = screen_offset_x;
   constants.screen_offset[1] = screen_offset_y;
-  constants.ao_radius = float(REXCVAR_GET(scene_fx_ao_radius));
+  constants.ao_radius = WorldLength(REXCVAR_GET(scene_fx_ao_radius));
   constants.ao_strength = float(REXCVAR_GET(scene_fx_ao_strength));
-  constants.ao_thickness = float(REXCVAR_GET(scene_fx_ao_thickness));
+  constants.ao_thickness = WorldLength(REXCVAR_GET(scene_fx_ao_thickness));
   // Cleared depth (the sky) is at the far plane - stored 1, or 0 if reversed.
   float distance_at_0 = constants.proj_b / -constants.proj_a;
   float distance_at_1 = constants.proj_b / (1.0f - constants.proj_a);
@@ -1026,21 +1102,21 @@ void SceneEffects::FillSunConstants(const CameraBasis& basis, void* constants_ou
   GetHeightRow(basis, sc.height);
   GetSunDirection(basis, sc.direction);
   sc.direction[3] = float(REXCVAR_GET(scene_fx_volumetrics_anisotropy));
-  sc.volumetric[0] = float(REXCVAR_GET(scene_fx_volumetrics_distance));
+  sc.volumetric[0] = WorldLength(REXCVAR_GET(scene_fx_volumetrics_distance));
   sc.volumetric[1] =
       float(QualityEntry(kVolumetricStepCounts, REXCVAR_GET(scene_fx_volumetrics_quality)));
   sc.volumetric[2] = float(REXCVAR_GET(scene_fx_volumetrics_intensity));
-  sc.volumetric[3] = float(REXCVAR_GET(scene_fx_volumetrics_density));
+  sc.volumetric[3] = WorldDensity(REXCVAR_GET(scene_fx_volumetrics_density));
   GetSunTint(sc.tint);
   // The shafts are seen in the fog too.
   bool fog = REXCVAR_GET(scene_fx_fog);
   sc.tint[3] = fog ? 1.0f : 0.0f;
-  sc.fog[0] = float(REXCVAR_GET(scene_fx_fog_ground_density));
-  sc.fog[1] = sc.height[3] + float(REXCVAR_GET(scene_fx_fog_ground_height));
-  sc.fog[2] = float(REXCVAR_GET(scene_fx_fog_ground_falloff));
-  sc.fog[3] = float(REXCVAR_GET(scene_fx_fog_density));
-  sc.contact[0] = float(REXCVAR_GET(scene_fx_contact_shadows_length));
-  sc.contact[1] = float(REXCVAR_GET(scene_fx_contact_shadows_thickness));
+  sc.fog[0] = WorldDensity(REXCVAR_GET(scene_fx_fog_ground_density));
+  sc.fog[1] = sc.height[3] + WorldLength(REXCVAR_GET(scene_fx_fog_ground_height));
+  sc.fog[2] = WorldDensity(REXCVAR_GET(scene_fx_fog_ground_falloff));
+  sc.fog[3] = WorldDensity(REXCVAR_GET(scene_fx_fog_density));
+  sc.contact[0] = WorldLength(REXCVAR_GET(scene_fx_contact_shadows_length));
+  sc.contact[1] = WorldLength(REXCVAR_GET(scene_fx_contact_shadows_thickness));
   sc.contact[2] = float(kContactShadowStepCount);
   sc.contact[3] = float(REXCVAR_GET(scene_fx_contact_shadows_strength));
   std::memcpy(constants_out, &sc, sizeof(sc));
@@ -1049,11 +1125,20 @@ void SceneEffects::FillSunConstants(const CameraBasis& basis, void* constants_ou
 void SceneEffects::ComputeEffects(RenderTarget& color_rt, const Rect& rect,
                                   int32_t screen_offset_x, int32_t screen_offset_y, bool trace) {
   uint64_t frame = GetCurrentFrame();
-  effects_frame_ = frame;
-  // This frame's scene goes to the other color buffer - the light source of
-  // the next frame's global illumination and reflections.
-  scene_color_index_ ^= 1;
-  scene_color_valid_[scene_color_index_] = false;
+  // Tiles of the same frame share its state.
+  if (effects_frame_ != frame) {
+    effects_frame_ = frame;
+    // This frame's scene goes to the other color buffer - the light source of
+    // the next frame's global illumination and reflections.
+    scene_color_index_ ^= 1;
+    scene_color_valid_[scene_color_index_] = false;
+    // The camera of the frame before, for the reprojections.
+    if (frame_camera_valid_) {
+      std::memcpy(previous_camera_, frame_camera_, sizeof(previous_camera_));
+      previous_camera_valid_ = true;
+    }
+    frame_camera_valid_ = false;
+  }
   ao_scale_ = REXCVAR_GET(scene_fx_ao_full_resolution) ? 1 : 2;
   volumetric_scale_ = REXCVAR_GET(scene_fx_volumetrics_full_resolution) ? 1 : 2;
   bool ao = REXCVAR_GET(scene_fx_ao);
@@ -1078,8 +1163,8 @@ void SceneEffects::ComputeEffects(RenderTarget& color_rt, const Rect& rect,
 
   // For the next frame's reprojection.
   if (camera_.has_matrix) {
-    std::memcpy(previous_camera_, camera_.rows, sizeof(previous_camera_));
-    previous_camera_valid_ = true;
+    std::memcpy(frame_camera_, camera_.rows, sizeof(frame_camera_));
+    frame_camera_valid_ = true;
   }
   if (trace) {
     REXGPU_INFO(
@@ -1165,10 +1250,10 @@ bool SceneEffects::ComputeReflections() {
   rc.up[1] = height[1];
   rc.up[2] = height[2];
   rc.up[3] = REXCVAR_GET(scene_fx_reflections_floors_only) ? 1.0f : 0.0f;
-  rc.params[0] = float(REXCVAR_GET(scene_fx_reflections_distance));
+  rc.params[0] = WorldLength(REXCVAR_GET(scene_fx_reflections_distance));
   rc.params[1] =
       float(QualityEntry(kReflectionStepCounts, REXCVAR_GET(scene_fx_reflections_quality)));
-  rc.params[2] = float(REXCVAR_GET(scene_fx_reflections_thickness));
+  rc.params[2] = WorldLength(REXCVAR_GET(scene_fx_reflections_thickness));
   rc.params[3] = float(REXCVAR_GET(scene_fx_reflections_reflectance));
   FxConstants constants;
   FillConstants(&constants, 0, 0);
@@ -1218,7 +1303,7 @@ bool SceneEffects::ComputeVolumetrics() {
   bool history = volumetric_history_valid_ && volumetric_history_scale_ == volumetric_scale_ &&
                  GetReprojection(tc.reproject);
   tc.params[0] = history ? kTemporalBlend : 1.0f;
-  tc.params[1] = float(REXCVAR_GET(scene_fx_volumetrics_distance));
+  tc.params[1] = WorldLength(REXCVAR_GET(scene_fx_volumetrics_distance));
   if (!Dispatch(Pipeline::kTemporal,
                 {Source(Texture::kVolumetric), Source(history_previous), Source(effect_depth)},
                 {Target(history_current)}, &constants, &tc, sizeof(tc), width, height)) {
@@ -1243,15 +1328,15 @@ bool SceneEffects::FillFogConstants() {
     return false;
   }
   GetHeightRow(basis, composite_constants_[0]);
-  composite_constants_[1][0] = float(REXCVAR_GET(scene_fx_fog_ground_density));
+  composite_constants_[1][0] = WorldDensity(REXCVAR_GET(scene_fx_fog_ground_density));
   composite_constants_[1][1] =
-      composite_constants_[0][3] + float(REXCVAR_GET(scene_fx_fog_ground_height));
-  composite_constants_[1][2] = float(REXCVAR_GET(scene_fx_fog_ground_falloff));
-  composite_constants_[1][3] = float(REXCVAR_GET(scene_fx_fog_density));
+      composite_constants_[0][3] + WorldLength(REXCVAR_GET(scene_fx_fog_ground_height));
+  composite_constants_[1][2] = WorldDensity(REXCVAR_GET(scene_fx_fog_ground_falloff));
+  composite_constants_[1][3] = WorldDensity(REXCVAR_GET(scene_fx_fog_density));
   float brightness = float(REXCVAR_GET(scene_fx_fog_brightness));
   composite_constants_[2][0] = composite_constants_[2][1] = composite_constants_[2][2] =
       brightness;
-  composite_constants_[2][3] = float(REXCVAR_GET(scene_fx_fog_distance));
+  composite_constants_[2][3] = WorldLength(REXCVAR_GET(scene_fx_fog_distance));
   bool sun = GetSunDirection(basis, composite_constants_[3]);
   composite_constants_[3][3] = 0.75f;
   float tint[3];
