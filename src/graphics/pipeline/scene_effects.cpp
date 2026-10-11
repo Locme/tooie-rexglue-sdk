@@ -424,6 +424,13 @@ void SceneEffects::OnDraw() {
   if (!depth_control.z_write_enable) {
     return;
   }
+  // A depth-writing full-screen rectangle at the start of a frame is a clear,
+  // not the scene: the sky drawn after it must not pass for the overlays.
+  auto draw_initiator = register_file_.Get<reg::VGT_DRAW_INITIATOR>();
+  if (draw_initiator.source_select == xenos::SourceSelect::kAutoIndex &&
+      draw_initiator.num_indices <= 4) {
+    return;
+  }
   sdr_scene_drawn_ = true;
   DrawState state;
   ReadCameraConstants(state.rows);
@@ -686,6 +693,22 @@ const SceneEffects::SdrTileLayout* SceneEffects::GetSdrTileLayout(int32_t& scree
   return nullptr;
 }
 
+bool SceneEffects::GetSdrDrawRect(Rect& rect_out) const {
+  uint32_t scale_x = render_target_cache_.draw_resolution_scale_x();
+  uint32_t scale_y = render_target_cache_.draw_resolution_scale_y();
+  auto window_offset = register_file_.Get<reg::PA_SC_WINDOW_OFFSET>();
+  auto scissor_tl = register_file_.Get<reg::PA_SC_WINDOW_SCISSOR_TL>();
+  auto scissor_br = register_file_.Get<reg::PA_SC_WINDOW_SCISSOR_BR>();
+  int32_t offset_x = scissor_tl.window_offset_disable ? 0 : int32_t(window_offset.window_x_offset);
+  int32_t offset_y = scissor_tl.window_offset_disable ? 0 : int32_t(window_offset.window_y_offset);
+  rect_out.left = std::max(0, (int32_t(scissor_tl.tl_x) + offset_x) * int32_t(scale_x));
+  rect_out.top = std::max(0, (int32_t(scissor_tl.tl_y) + offset_y) * int32_t(scale_y));
+  rect_out.right = (int32_t(scissor_br.br_x) + offset_x) * int32_t(scale_x);
+  rect_out.bottom = (int32_t(scissor_br.br_y) + offset_y) * int32_t(scale_y);
+  return rect_out.right > rect_out.left && rect_out.bottom > rect_out.top &&
+         uint32_t(rect_out.right) <= sdr_width_ && uint32_t(rect_out.bottom) <= sdr_height_;
+}
+
 void SceneEffects::CaptureSdrSceneDepthBeforeBlending() {
   // The first blended draw after a tile's opaque 3D: see-through sprites
   // (glows, smoke) still write depth, which the effects would take for solid
@@ -704,10 +727,11 @@ void SceneEffects::CaptureSdrSceneDepthBeforeBlending() {
     return;
   }
   int32_t tile = GetSdrTile(screen_offset_x, screen_offset_y);
-  if (tile < 0 || sdr_tiles_[tile].depth_captured || sdr_tiles_[tile].composited) {
+  Rect rect;
+  if (tile < 0 || sdr_tiles_[tile].depth_captured || sdr_tiles_[tile].composited ||
+      !GetSdrDrawRect(rect)) {
     return;
   }
-  const Rect& rect = layout->rect;
   Rect screen_rect = {rect.left + screen_offset_x, rect.top + screen_offset_y,
                       rect.right + screen_offset_x, rect.bottom + screen_offset_y};
   uint64_t frame = GetCurrentFrame();
@@ -740,7 +764,8 @@ void SceneEffects::CompositeSdrSceneBeforeOverlay() {
     return;
   }
   int32_t tile = GetSdrTile(screen_offset_x, screen_offset_y);
-  if (tile < 0 || sdr_tiles_[tile].composited) {
+  Rect rect;
+  if (tile < 0 || sdr_tiles_[tile].composited || !GetSdrDrawRect(rect)) {
     return;
   }
   sdr_tiles_[tile].composited = true;
@@ -750,7 +775,7 @@ void SceneEffects::CompositeSdrSceneBeforeOverlay() {
     REXGPU_INFO("Scene effects trace: SDR scene tile at screen offset {},{}: before its overlays",
                 screen_offset_x, screen_offset_y);
   }
-  CompositeSdrSceneTile(*color_rt, render_targets[0], layout->rect, sdr_width_, sdr_height_,
+  CompositeSdrSceneTile(*color_rt, render_targets[0], rect, sdr_width_, sdr_height_,
                         screen_offset_x, screen_offset_y, trace);
 }
 

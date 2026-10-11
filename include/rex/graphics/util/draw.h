@@ -286,9 +286,12 @@ void GetHostViewportInfo(const RegisterFile& regs, uint32_t draw_resolution_scal
 // binding starts with a float4 position (which the game's vertex shaders
 // pass through), and every vertex has w = 1 and |x| < 1: vertices with w != 1
 // are perspective (the 3D scene), and quads touching the screen's edges
-// (fades, full-screen overlays) are left to cover the whole screen.
+// (fades, full-screen overlays) are left to cover the whole screen. Only the
+// 2D draws after the 3D scene of a frame (or of a predicated-tiling tile) are
+// narrowed: the ones before it are its backdrop (a sky drawn as tiled 2D
+// rectangles), which has to keep covering the widened view.
 void ApplyScreenSpaceDrawScale(const RegisterFile& regs, const memory::Memory& memory,
-                               const Shader& vertex_shader, uint32_t index_count,
+                               const Shader& vertex_shader, uint32_t index_count, uint64_t frame,
                                ViewportInfo& viewport_info);
 
 struct Scissor {

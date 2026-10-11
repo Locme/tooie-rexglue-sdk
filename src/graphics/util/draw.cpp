@@ -532,13 +532,36 @@ void GetHostViewportInfo(const RegisterFile& regs, uint32_t draw_resolution_scal
 }
 
 void ApplyScreenSpaceDrawScale(const RegisterFile& regs, const memory::Memory& memory,
-                               const Shader& vertex_shader, uint32_t index_count,
+                               const Shader& vertex_shader, uint32_t index_count, uint64_t frame,
                                ViewportInfo& viewport_info) {
   float x_scale = rex::system::GetScreenSpaceDrawScale();
+  if (x_scale == 1.0f) {
+    return;
+  }
+  // Whether the 3D scene has been drawn since the frame or the tile (window
+  // offset) began: what's drawn before it is the backdrop.
+  static uint64_t phase_frame = UINT64_MAX;
+  static uint32_t phase_window_offset = 0;
+  static bool after_scene = false;
+  uint32_t window_offset = regs.Get<reg::PA_SC_WINDOW_OFFSET>().value;
+  if (frame != phase_frame || window_offset != phase_window_offset) {
+    phase_frame = frame;
+    phase_window_offset = window_offset;
+    after_scene = false;
+  }
+  bool auto_index =
+      regs.Get<reg::VGT_DRAW_INITIATOR>().source_select == xenos::SourceSelect::kAutoIndex;
+  auto depth_control = regs.Get<reg::RB_DEPTHCONTROL>();
+  if (depth_control.z_enable && depth_control.z_write_enable) {
+    // Except a depth-writing full-screen rectangle: a clear, not the scene.
+    if (!auto_index || index_count > 4) {
+      after_scene = true;
+    }
+    return;
+  }
   // HUD elements are small quads; the cap bounds the cost of the check.
   constexpr uint32_t kMaxVertices = 1024;
-  if (x_scale == 1.0f || !index_count || index_count > kMaxVertices ||
-      regs.Get<reg::VGT_DRAW_INITIATOR>().source_select != xenos::SourceSelect::kAutoIndex) {
+  if (!after_scene || !auto_index || !index_count || index_count > kMaxVertices) {
     return;
   }
   const auto& bindings = vertex_shader.vertex_bindings();

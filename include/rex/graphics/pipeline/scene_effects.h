@@ -379,6 +379,10 @@ class SceneEffects {
   // The layout of the tile at the current window offset, if known.
   const SdrTileLayout* GetSdrTileLayout(int32_t& screen_offset_x,
                                         int32_t& screen_offset_y) const;
+  // The tile being drawn now, from the scissor (a stored rectangle can be of
+  // a differently sized earlier image); false if empty or larger than the
+  // scene's tiles.
+  bool GetSdrDrawRect(Rect& rect_out) const;
   uint32_t sdr_width_ = 0;
   uint32_t sdr_height_ = 0;
   // Depth-writing draws since the last SDR composite or resolve.
