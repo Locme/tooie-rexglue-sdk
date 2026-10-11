@@ -1,0 +1,65 @@
+name: Build Banjo-Tooie SDK (win + linux)
+
+# Manual: builds the dispatched branch (banjo-scene-fx) for Windows and
+# Linux and publishes both zips as a "banjo-<date>-<sha>" prerelease, so the
+# Banjo-Tooie project's scripts/fetch_sdk.ps1 can download the SDK with the
+# scene effects. Tags can't be pushed from the project's cloud sessions, so
+# the tagged release workflows aren't used here.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build-win-amd64:
+    uses: ./.github/workflows/_build-platform.yaml
+    with:
+      platform: win-amd64
+      ref: ${{ github.sha }}
+      publish_mode: artifact
+      artifact_name: banjo-win-amd64
+    secrets: inherit
+
+  build-linux-amd64:
+    uses: ./.github/workflows/_build-platform.yaml
+    with:
+      platform: linux-amd64
+      ref: ${{ github.sha }}
+      publish_mode: artifact
+      artifact_name: banjo-linux-amd64
+    secrets: inherit
+
+  publish:
+    needs: [build-win-amd64, build-linux-amd64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build-win-amd64.outputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          tag_name="banjo-$(date -u +%Y%m%d)-${SHA:0:8}"
+          notes=$(git log --no-merges --pretty='format:- %s (%h)' -8 "${SHA}")
+          assets=(artifacts/banjo-win-amd64/*.zip artifacts/banjo-linux-amd64/*.zip)
+          if gh release view "${tag_name}" >/dev/null 2>&1; then
+            gh release upload "${tag_name}" "${assets[@]}" --clobber
+          else
+            gh release create "${tag_name}" \
+              --target "${SHA}" \
+              --title "Banjo-Tooie SDK ${VERSION}" \
+              --notes "${notes}" \
+              --prerelease \
+              "${assets[@]}"
+          fi
