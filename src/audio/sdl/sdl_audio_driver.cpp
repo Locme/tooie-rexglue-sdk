@@ -77,8 +77,7 @@ bool SDLAudioDriver::Initialize() {
     sdl_stream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &desired_spec,
                                             SDLCallback, this);
     if (!sdl_stream_) {
-      REXAPU_ERROR("SDL_OpenAudioDeviceStream() failed with the dummy backend: {}",
-                   SDL_GetError());
+      REXAPU_ERROR("SDL_OpenAudioDeviceStream() failed with the dummy backend: {}", SDL_GetError());
       return false;
     }
   }
