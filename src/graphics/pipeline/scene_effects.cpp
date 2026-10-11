@@ -282,6 +282,7 @@ constexpr uint32_t kEffectGi = 4;
 constexpr uint32_t kEffectFog = 8;
 constexpr uint32_t kEffectContactShadows = 16;
 constexpr uint32_t kEffectReflections = 32;
+constexpr uint32_t kDepthFillSky = 64;
 constexpr int32_t kDebugSplit = 1;
 constexpr uint32_t kCompositeMultiply = 0;
 constexpr uint32_t kCompositeAdd = 1;
@@ -411,6 +412,14 @@ void SceneEffects::OnDraw() {
   if (!depth_control.z_enable) {
     CompositeSdrSceneBeforeOverlay();
     return;
+  }
+  if (sdr_scene_drawn_) {
+    auto blend = register_file_.Get<reg::RB_BLENDCONTROL>();
+    if (blend.color_srcblend != xenos::BlendFactor::kOne ||
+        blend.color_destblend != xenos::BlendFactor::kZero ||
+        blend.color_comb_fcn != xenos::BlendOp::kAdd) {
+      CaptureSdrSceneDepthBeforeBlending();
+    }
   }
   if (!depth_control.z_write_enable) {
     return;
@@ -653,7 +662,59 @@ int32_t SceneEffects::GetSdrTile(int32_t screen_offset_x, int32_t screen_offset_
   tile.offset[1] = screen_offset_y;
   tile.composited = false;
   tile.resolved = false;
+  tile.depth_captured = false;
   return int32_t(sdr_tile_count_++);
+}
+
+const SceneEffects::SdrTileLayout* SceneEffects::GetSdrTileLayout(int32_t& screen_offset_x,
+                                                                  int32_t& screen_offset_y) const {
+  if (!REXCVAR_GET(scene_fx_sdr_scene) ||
+      render_target_cache_.GetPath() != RenderTargetCache::Path::kHostRenderTargets) {
+    return nullptr;
+  }
+  uint32_t scale_x = render_target_cache_.draw_resolution_scale_x();
+  uint32_t scale_y = render_target_cache_.draw_resolution_scale_y();
+  auto window_offset = register_file_.Get<reg::PA_SC_WINDOW_OFFSET>();
+  screen_offset_x = -int32_t(window_offset.window_x_offset) * int32_t(scale_x);
+  screen_offset_y = -int32_t(window_offset.window_y_offset) * int32_t(scale_y);
+  for (uint32_t i = 0; i < sdr_layout_count_; ++i) {
+    if (sdr_layout_[i].offset[0] == screen_offset_x &&
+        sdr_layout_[i].offset[1] == screen_offset_y) {
+      return &sdr_layout_[i];
+    }
+  }
+  return nullptr;
+}
+
+void SceneEffects::CaptureSdrSceneDepthBeforeBlending() {
+  // The first blended draw after a tile's opaque 3D: see-through sprites
+  // (glows, smoke) still write depth, which the effects would take for solid
+  // surfaces (an unoccluded disk around Bottles' glow). Their tile's depth is
+  // copied now; at the composite only what's still sky is taken (what's
+  // drawn over the sky later).
+  int32_t screen_offset_x, screen_offset_y;
+  const SdrTileLayout* layout = GetSdrTileLayout(screen_offset_x, screen_offset_y);
+  if (!layout) {
+    return;
+  }
+  RenderTarget* const* render_targets =
+      render_target_cache_.last_update_accumulated_render_targets();
+  RenderTarget* color_rt = render_targets[1];
+  if (!render_targets[0] || !color_rt || IsHdrColorFormat(color_rt->key().GetColorFormat())) {
+    return;
+  }
+  int32_t tile = GetSdrTile(screen_offset_x, screen_offset_y);
+  if (tile < 0 || sdr_tiles_[tile].depth_captured || sdr_tiles_[tile].composited) {
+    return;
+  }
+  const Rect& rect = layout->rect;
+  Rect screen_rect = {rect.left + screen_offset_x, rect.top + screen_offset_y,
+                      rect.right + screen_offset_x, rect.bottom + screen_offset_y};
+  uint64_t frame = GetCurrentFrame();
+  bool trace = frame >= trace_frame_ && frame < trace_frame_end_;
+  CaptureSceneDepth(*render_targets[0], GetDominantDrawState(false), sdr_width_, sdr_height_,
+                    screen_offset_x, screen_offset_y, trace, &screen_rect);
+  sdr_tiles_[tile].depth_captured = depth_frame_ == frame;
 }
 
 void SceneEffects::CompositeSdrSceneBeforeOverlay() {
@@ -665,22 +726,8 @@ void SceneEffects::CompositeSdrSceneBeforeOverlay() {
     return;
   }
   sdr_scene_drawn_ = false;
-  if (!REXCVAR_GET(scene_fx_sdr_scene) ||
-      render_target_cache_.GetPath() != RenderTargetCache::Path::kHostRenderTargets) {
-    return;
-  }
-  uint32_t scale_x = render_target_cache_.draw_resolution_scale_x();
-  uint32_t scale_y = render_target_cache_.draw_resolution_scale_y();
-  auto window_offset = register_file_.Get<reg::PA_SC_WINDOW_OFFSET>();
-  int32_t screen_offset_x = -int32_t(window_offset.window_x_offset) * int32_t(scale_x);
-  int32_t screen_offset_y = -int32_t(window_offset.window_y_offset) * int32_t(scale_y);
-  const SdrTileLayout* layout = nullptr;
-  for (uint32_t i = 0; i < sdr_layout_count_ && !layout; ++i) {
-    if (sdr_layout_[i].offset[0] == screen_offset_x &&
-        sdr_layout_[i].offset[1] == screen_offset_y) {
-      layout = &sdr_layout_[i];
-    }
-  }
+  int32_t screen_offset_x, screen_offset_y;
+  const SdrTileLayout* layout = GetSdrTileLayout(screen_offset_x, screen_offset_y);
   if (!layout) {
     return;
   }
@@ -767,8 +814,10 @@ void SceneEffects::CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* d
     REXGPU_INFO("Scene effects trace: SDR scene tile at {},{}-{},{} (screen)", screen_rect.left,
                 screen_rect.top, screen_rect.right, screen_rect.bottom);
   }
+  int32_t tile = GetSdrTile(screen_offset_x, screen_offset_y);
   CaptureSceneDepth(*depth_rt, GetDominantDrawState(false), width, height, screen_offset_x,
-                    screen_offset_y, trace, &screen_rect);
+                    screen_offset_y, trace, &screen_rect,
+                    tile >= 0 && sdr_tiles_[tile].depth_captured);
   if (depth_frame_ != frame) {
     return;
   }
@@ -896,7 +945,7 @@ bool SceneEffects::IsPerspective(const float rows[4][4]) {
 void SceneEffects::CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* scene_state,
                                      uint32_t width, uint32_t height, int32_t screen_offset_x,
                                      int32_t screen_offset_y, bool trace,
-                                     const Rect* screen_rect) {
+                                     const Rect* screen_rect, bool fill_sky_only) {
   if (!EnsureSceneTextures(width, height)) {
     return;
   }
@@ -925,6 +974,9 @@ void SceneEffects::CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* sc
     constants.pass_rect[1] = uint32_t(std::max(screen_rect->top, 0));
     constants.pass_rect[2] = uint32_t(std::max(screen_rect->right, 0));
     constants.pass_rect[3] = uint32_t(std::max(screen_rect->bottom, 0));
+  }
+  if (fill_sky_only) {
+    constants.effect_flags |= kDepthFillSky;
   }
   bool msaa = depth_rt.key().msaa_samples != xenos::MsaaSamples::k1X;
   if (Dispatch(msaa ? Pipeline::kDepthCopyMsaa : Pipeline::kDepthCopy, {Source(&depth_rt)},

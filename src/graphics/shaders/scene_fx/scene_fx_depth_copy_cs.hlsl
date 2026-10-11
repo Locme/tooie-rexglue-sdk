@@ -4,7 +4,8 @@
 // FX_MSAA selects the multisampled source variant.
 // A non-empty fx_pass_rect (screen pixels) limits the copy to that rectangle:
 // one tile of a predicated-tiled scene, keeping the tiles above (copied
-// before it) and emptying those below (not drawn yet).
+// before it) and emptying those below (not drawn yet). FX_DEPTH_FILL_SKY:
+// only the pixels still sky (drawn after an earlier copy of the tile).
 
 #include "scene_fx_common.hlsli"
 
@@ -43,6 +44,10 @@ void main(uint3 id : SV_DispatchThreadID) {
 #ifdef FX_RAW
   fx_depth[id.xy] = device_depth;
 #else
+  if ((fx_effect_flags & FX_DEPTH_FILL_SKY) != 0u && fx_depth[id.xy] < 1.0e5) {
+    // Keep the depth from before the see-through draws.
+    return;
+  }
   float distance = FxViewDistance(device_depth);
   // Past the far plane (or numerically behind the camera): treat as sky.
   fx_depth[id.xy] = distance > 0.0 ? min(distance, 1.0e6) : 1.0e6;

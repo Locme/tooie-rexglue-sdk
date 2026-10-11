@@ -30,6 +30,8 @@
 #define FX_EFFECT_FOG 8u
 #define FX_EFFECT_CONTACT_SHADOWS 16u
 #define FX_EFFECT_REFLECTIONS 32u
+// Depth copy: only where the depth copied so far is the sky.
+#define FX_DEPTH_FILL_SKY 64u
 
 // scene_fx_debug.
 #define FX_DEBUG_SPLIT 1u

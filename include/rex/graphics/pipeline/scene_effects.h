@@ -267,11 +267,13 @@ class SceneEffects {
   // target bound at the color resolve) and takes its camera.
   void CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* scene_state, uint32_t width,
                          uint32_t height, int32_t screen_offset_x, int32_t screen_offset_y,
-                         bool trace, const Rect* screen_rect = nullptr);
+                         bool trace, const Rect* screen_rect = nullptr,
+                         bool fill_sky_only = false);
   void ResolveSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt, const Rect& rect,
                            uint32_t width, uint32_t height, int32_t screen_offset_x,
                            int32_t screen_offset_y, bool trace);
   void CompositeSdrSceneBeforeOverlay();
+  void CaptureSdrSceneDepthBeforeBlending();
   void CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt, const Rect& rect,
                              uint32_t width, uint32_t height, int32_t screen_offset_x,
                              int32_t screen_offset_y, bool trace);
@@ -363,6 +365,8 @@ class SceneEffects {
     int32_t offset[2];
     bool composited;
     bool resolved;
+    // Before the tile's blended draws.
+    bool depth_captured;
   };
   SdrTile sdr_tiles_[kMaxSdrTiles] = {};
   // The tiles' rectangles and the scene's size from their last resolves.
@@ -372,6 +376,9 @@ class SceneEffects {
   };
   SdrTileLayout sdr_layout_[kMaxSdrTiles] = {};
   uint32_t sdr_layout_count_ = 0;
+  // The layout of the tile at the current window offset, if known.
+  const SdrTileLayout* GetSdrTileLayout(int32_t& screen_offset_x,
+                                        int32_t& screen_offset_y) const;
   uint32_t sdr_width_ = 0;
   uint32_t sdr_height_ = 0;
   // Depth-writing draws since the last SDR composite or resolve.
