@@ -33,6 +33,9 @@ REXCVAR_DEFINE_STRING(user_data_root, "", "Runtime", "Override user data path");
 REXCVAR_DEFINE_STRING(update_data_root, "", "Runtime", "Override update data path");
 REXCVAR_DEFINE_STRING(cache_root, "", "Runtime", "Override shader cache path");
 REXCVAR_DEFINE_STRING(metadata_root, "", "Runtime", "Override metadata path");
+#ifdef REXGLUE_ENABLE_PERF_COUNTERS
+REXCVAR_DECLARE(std::string, perf_log_csv);
+#endif
 
 namespace rex {
 
@@ -100,6 +103,14 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
     Shutdown();
     return status;
   };
+
+#ifdef REXGLUE_ENABLE_PERF_COUNTERS
+  // perf_log_csv was defined but nothing opened the file, so Flip() never
+  // wrote a row (iron-jay/rexglue-sdk@035aa25).
+  if (!REXCVAR_GET(perf_log_csv).empty()) {
+    rex::perf::SetCsvLogPath(REXCVAR_GET(perf_log_csv));
+  }
+#endif
 
   // Initialize SEH exception support for hardware exception handling
   rex::initialize_seh();

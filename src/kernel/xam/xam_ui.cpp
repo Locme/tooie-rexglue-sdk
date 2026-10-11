@@ -15,6 +15,9 @@
 #include <rex/system/flags.h>
 #include <rex/system/kernel_state.h>
 
+#include <algorithm>
+#include <cctype>
+
 #include <imgui.h>
 
 REXCVAR_DEFINE_BOOL(headless, false, "Kernel",
@@ -293,8 +296,29 @@ u32 XamShowMessageBoxUI_entry(u32 user_index, mapped_wstring title_ptr, mapped_w
     buttons.push_back(rex::string::to_utf8(button));
   }
 
+  // A button that keeps the player offline (e.g. "Continue offline" on an Xbox
+  // LIVE prompt) is picked without showing the box: LIVE can never connect
+  // here. Other message boxes (save errors etc.) are unaffected.
+  // From iron-jay/rexglue-sdk@035aa25.
+  int32_t offline_button = -1;
+  for (size_t i = 0; i < buttons.size(); ++i) {
+    std::string lower = buttons[i];
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower.find("offline") != std::string::npos) {
+      offline_button = static_cast<int32_t>(i);
+      break;
+    }
+  }
+
   X_RESULT result;
-  if (REXCVAR_GET(headless)) {
+  if (offline_button >= 0) {
+    auto run = [result_ptr, offline_button]() -> X_RESULT {
+      *result_ptr = static_cast<uint32_t>(offline_button);
+      return X_ERROR_SUCCESS;
+    };
+    result = xeXamDispatchHeadless(run, overlapped.guest_address());
+  } else if (REXCVAR_GET(headless)) {
     // Auto-pick the focused button.
     auto run = [result_ptr, active_button]() -> X_RESULT {
       *result_ptr = static_cast<uint32_t>(active_button);

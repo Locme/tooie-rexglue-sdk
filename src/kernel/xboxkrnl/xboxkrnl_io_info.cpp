@@ -149,7 +149,9 @@ u32 NtQueryInformationFile_entry(u32 file_handle, ppc_ptr_t<X_IO_STATUS_BLOCK> i
       break;
     }
     case XFileXctdCompressionInformation: {
-      REXKRNL_ERROR(
+      // Fires on every query and the failure is relied on: titles fall back to
+      // treating the file as uncompressed. Returning success breaks them.
+      REXKRNL_DEBUG(
           "NtQueryInformationFile(XFileXctdCompressionInformation) "
           "unimplemented");
       // Files that are XCTD compressed begin with the magic 0x0FF512ED but we

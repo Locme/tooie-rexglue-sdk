@@ -58,8 +58,28 @@ bool SDLAudioDriver::Initialize() {
   sdl_stream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &desired_spec,
                                           SDLCallback, this);
   if (!sdl_stream_) {
-    REXAPU_ERROR("SDL_OpenAudioDeviceStream() failed: {}", SDL_GetError());
-    return false;
+    // No playback device (no sound card, disabled output, some RDP/VM
+    // setups). The guest treats a failed XAudioRegisterClient as fatal and
+    // exits at boot, so fall back to SDL's "dummy" backend: it consumes
+    // frames in real time, the guest audio thread keeps its pace, and
+    // nothing is heard. Fix from iron-jay/rexglue-sdk@035aa25.
+    REXAPU_WARN("SDL_OpenAudioDeviceStream() failed ({}); using the dummy audio backend",
+                SDL_GetError());
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    sdl_initialized_ = false;
+    SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE);
+    if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+      REXAPU_ERROR("SDL_InitSubSystem(SDL_INIT_AUDIO) failed for dummy backend: {}",
+                   SDL_GetError());
+      return false;
+    }
+    sdl_initialized_ = true;
+    sdl_stream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &desired_spec,
+                                            SDLCallback, this);
+    if (!sdl_stream_) {
+      REXAPU_ERROR("SDL_OpenAudioDeviceStream() failed with the dummy backend: {}", SDL_GetError());
+      return false;
+    }
   }
 
   SDL_AudioDeviceID sdl_device = SDL_GetAudioStreamDevice(sdl_stream_);
