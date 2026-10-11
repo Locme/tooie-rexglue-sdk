@@ -15,6 +15,7 @@
 #include <cstring>
 
 #include <rex/cvar.h>
+#include <rex/system/scene_camera.h>
 #include <rex/graphics/registers.h>
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
@@ -188,6 +189,11 @@ REXCVAR_DEFINE_INT32(scene_fx_world_constant, 4, "GPU/Effects",
                      "world transform rows, which the camera constants include and are freed "
                      "of (-1: the camera constants are the view-projection alone)")
     .range(-1, 253) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_sdr_scene, false, "GPU/Effects",
+                    "The scene is drawn to an 8-bit (non-HDR) color target: composite the "
+                    "effects at its resolve, taking the depth from the depth target bound "
+                    "with it when the game resolves no depth of its own (N64-style ports)")
+    REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_INT32(scene_fx_debug, 0, "GPU/Effects",
                      "Effects debug view: 0 = off, 1 = effects on the left half of the screen "
                      "only, 2 = ambient occlusion, 3 = volumetric lighting, 4 = global "
@@ -520,35 +526,22 @@ void SceneEffects::OnResolve() {
       return;
     }
     // Full scenes only - not reflections or other smaller views.
-    if (dest_pitch.copy_dest_pitch < 640 || dest_pitch.copy_dest_height < 360 ||
-        !EnsureSceneTextures(width, height)) {
+    if (dest_pitch.copy_dest_pitch < 640 || dest_pitch.copy_dest_height < 360) {
       return;
     }
-    if (scene_state) {
-      scene_depth_range_ = scene_state->depth_range;
-      CaptureCamera(scene_state->rows);
-    }
-    if (trace) {
-      CameraBasis basis;
-      bool has_basis = camera_.has_matrix && GetCameraBasis(camera_.rows, basis);
-      REXGPU_INFO(
-          "Scene effects trace: scene depth, camera A {} B {} inverse P00 {} P11 {}, depth scale "
-          "{} offset {}, at {:.2f} {:.2f} {:.2f}",
-          camera_.proj_a, camera_.proj_b, camera_.inv_p00, camera_.inv_p11,
-          scene_depth_range_.scale, scene_depth_range_.offset,
-          has_basis ? basis.position[0] : 0.0f, has_basis ? basis.position[1] : 0.0f,
-          has_basis ? basis.position[2] : 0.0f);
-    }
-    scene_width_ = width;
-    scene_height_ = height;
-    FxConstants constants;
-    FillConstants(&constants, screen_offset_x, screen_offset_y);
-    bool msaa = source_rt->key().msaa_samples != xenos::MsaaSamples::k1X;
-    if (Dispatch(msaa ? Pipeline::kDepthCopyMsaa : Pipeline::kDepthCopy, {Source(source_rt)},
-                 {Target(Texture::kDepth)}, &constants, nullptr, 0, width, height)) {
-      depth_frame_ = frame;
-    }
+    CaptureSceneDepth(*source_rt, scene_state, width, height, screen_offset_x, screen_offset_y,
+                      trace);
     return;
+  }
+
+  // An SDR scene whose depth the game never resolves: the depth target bound
+  // with the color being resolved is the scene's.
+  bool sdr_scene = REXCVAR_GET(scene_fx_sdr_scene) &&
+                   !IsHdrColorFormat(source_rt->key().GetColorFormat()) &&
+                   dest_pitch.copy_dest_pitch >= 640 && dest_pitch.copy_dest_height >= 360;
+  if (sdr_scene && scene_effects && depth_frame_ != frame && render_targets[0]) {
+    CaptureSceneDepth(*render_targets[0], GetDominantDrawState(false), width, height,
+                      screen_offset_x, screen_offset_y, trace);
   }
 
   // Color resolves after the scene depth in the same frame.
@@ -574,8 +567,9 @@ void SceneEffects::OnResolve() {
     return;
   }
 
-  if (IsHdrColorFormat(source_rt->key().GetColorFormat())) {
-    // HDR color of the scene: composite the effects before it's resolved, so
+  if (IsHdrColorFormat(source_rt->key().GetColorFormat()) || (sdr_scene && hdr_frame_ != frame)) {
+    // HDR color of the scene (or the first scene-sized SDR color with
+    // scene_fx_sdr_scene): composite the effects before it's resolved, so
     // the guest's own post-processing (bloom, exposure, tonemapping) and UI
     // come on top.
     if (width != scene_width_ || height != scene_height_) {
@@ -607,6 +601,12 @@ void SceneEffects::OnResolve() {
       Composite(*source_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
                 Draw::kCompositeAdd, trace);
     }
+    if (sdr_scene) {
+      // An SDR scene is usually resolved once, UI included: the image
+      // effects go here, as no later resolve may come.
+      image_frame_ = frame;
+      ApplyImageEffects(*source_rt, rect, width, height, trace);
+    }
     return;
   }
 
@@ -625,6 +625,10 @@ void SceneEffects::OnResolve() {
 }
 
 void SceneEffects::ReadCameraConstants(float rows[4][4]) const {
+  // A camera handed over by the game wins over the shader constants.
+  if (rex::system::GetSceneCamera(rows)) {
+    return;
+  }
   int32_t base = REXCVAR_GET(scene_fx_camera_constant);
   if (base < 0) {
     std::memset(rows, 0, sizeof(float) * 16);
@@ -718,6 +722,38 @@ bool SceneEffects::IsPerspective(const float rows[4][4]) {
   // (z = A * w + B).
   return std::abs(length_w - 1.0f) < 0.01f && length_x > 0.05f && length_y > 0.05f &&
          length_z > 0.5f && Dot3(rows[2], rows[3]) > 0.999f * length_z * length_w;
+}
+
+void SceneEffects::CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* scene_state,
+                                     uint32_t width, uint32_t height, int32_t screen_offset_x,
+                                     int32_t screen_offset_y, bool trace) {
+  if (!EnsureSceneTextures(width, height)) {
+    return;
+  }
+  if (scene_state) {
+    scene_depth_range_ = scene_state->depth_range;
+    CaptureCamera(scene_state->rows);
+  }
+  if (trace) {
+    CameraBasis basis;
+    bool has_basis = camera_.has_matrix && GetCameraBasis(camera_.rows, basis);
+    REXGPU_INFO(
+        "Scene effects trace: scene depth, camera A {} B {} inverse P00 {} P11 {}, depth scale "
+        "{} offset {}, at {:.2f} {:.2f} {:.2f}",
+        camera_.proj_a, camera_.proj_b, camera_.inv_p00, camera_.inv_p11,
+        scene_depth_range_.scale, scene_depth_range_.offset,
+        has_basis ? basis.position[0] : 0.0f, has_basis ? basis.position[1] : 0.0f,
+        has_basis ? basis.position[2] : 0.0f);
+  }
+  scene_width_ = width;
+  scene_height_ = height;
+  FxConstants constants;
+  FillConstants(&constants, screen_offset_x, screen_offset_y);
+  bool msaa = depth_rt.key().msaa_samples != xenos::MsaaSamples::k1X;
+  if (Dispatch(msaa ? Pipeline::kDepthCopyMsaa : Pipeline::kDepthCopy, {Source(&depth_rt)},
+               {Target(Texture::kDepth)}, &constants, nullptr, 0, width, height)) {
+    depth_frame_ = GetCurrentFrame();
+  }
 }
 
 void SceneEffects::CaptureCamera(const float rows[4][4]) {

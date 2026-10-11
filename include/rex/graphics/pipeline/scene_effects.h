@@ -263,6 +263,11 @@ class SceneEffects {
   // being resolved, orthographic (a shadow map) or perspective (the scene).
   const DrawState* GetDominantDrawState(bool orthographic) const;
   void CaptureCamera(const float rows[4][4]);
+  // Copies the scene's depth (the resolve's, or with scene_fx_sdr_scene the
+  // target bound at the color resolve) and takes its camera.
+  void CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* scene_state, uint32_t width,
+                         uint32_t height, int32_t screen_offset_x, int32_t screen_offset_y,
+                         bool trace);
   void CaptureShadowCascade(RenderTarget& depth_rt, const DrawState& draw_state, uint32_t width,
                             uint32_t height, bool trace);
   bool IsShadowCascadeUsable(const ShadowCascade& cascade) const;
