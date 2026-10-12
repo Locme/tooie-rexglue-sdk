@@ -100,6 +100,19 @@ void SwapGuest16BitChannelsToFileOrder(xenos::TextureFormat format, uint8_t* dat
 // order in place.
 void ConvertB4G4R4A4ToVulkanPack16(uint8_t* data, size_t size);
 
+// k_8_8_8_8 textures are written to the dumps, and read from replacement
+// files, in the channel order the game's shaders see: the texture fetch
+// constant's swizzle (Direct3D 9 on the Xbox 360 stores A8R8G8B8 as 8_8_8_8
+// with a blue-green-red-alpha swizzle). So a dump opens in an image editor
+// with the colors the game shows, and an edited file comes back the same way.
+// Only swizzles that reorder the four channels are applied; any other (with
+// 0/1 constants or a repeated channel) leaves the memory order.
+constexpr uint32_t kIdentitySwizzle = 0 | (1 << 3) | (2 << 6) | (3 << 9);
+// RGBA8 pixels from memory order to file order (file[c] = memory[swizzle[c]]).
+void SwizzleRGBA8ToFileOrder(uint8_t* data, size_t size, uint32_t swizzle);
+// The inverse: file order back to memory order.
+void SwizzleRGBA8FromFileOrder(uint8_t* data, size_t size, uint32_t swizzle);
+
 // Hash of the base level's guest data mixed with the format and size.
 uint64_t HashGuestBase(const uint8_t* guest_base, uint32_t guest_base_size,
                        const Description& description);
@@ -107,9 +120,11 @@ uint64_t HashGuestBase(const uint8_t* guest_base, uint32_t guest_base_size,
 // "<format>_<width>x<height>_<hash as 16 hex digits>".
 std::string FileStem(const Description& description, uint64_t hash);
 
-// Writes <directory>/<stem>.dds from the base level, untiled and byte-swapped.
+// Writes <directory>/<stem>.dds from the base level, untiled and byte-swapped
+// (8_8_8_8 in the channel order of `swizzle`, the fetch constant's).
 // False if the format or dimension isn't dumpable (the caller logs once).
 bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& stem,
-                   const uint8_t* guest_base, const Description& description);
+                   const uint8_t* guest_base, const Description& description,
+                   uint32_t swizzle = kIdentitySwizzle);
 
 }  // namespace rex::graphics::texture_files
