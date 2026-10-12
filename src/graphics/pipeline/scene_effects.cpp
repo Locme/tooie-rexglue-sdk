@@ -510,6 +510,18 @@ void SceneEffects::OnDraw(uint64_t vertex_shader_hash, uint64_t pixel_shader_has
     return;
   }
   sdr_scene_drawn_ = true;
+  Rect draw_rect;
+  if (GetSdrDrawRect(draw_rect)) {
+    if (!scene_draw_rect_valid_) {
+      scene_draw_rect_ = draw_rect;
+      scene_draw_rect_valid_ = true;
+    } else {
+      scene_draw_rect_.left = std::min(scene_draw_rect_.left, draw_rect.left);
+      scene_draw_rect_.top = std::min(scene_draw_rect_.top, draw_rect.top);
+      scene_draw_rect_.right = std::max(scene_draw_rect_.right, draw_rect.right);
+      scene_draw_rect_.bottom = std::max(scene_draw_rect_.bottom, draw_rect.bottom);
+    }
+  }
   DrawState state;
   ReadCameraConstants(state.rows);
   auto vte_control = register_file_.Get<reg::PA_CL_VTE_CNTL>();
@@ -570,8 +582,12 @@ void SceneEffects::OnResolve() {
   // the next one.
   struct DrawStatesReset {
     uint32_t& count;
-    ~DrawStatesReset() { count = 0; }
-  } draw_states_reset{draw_state_count_};
+    bool& rect_valid;
+    ~DrawStatesReset() {
+      count = 0;
+      rect_valid = false;
+    }
+  } draw_states_reset{draw_state_count_, scene_draw_rect_valid_};
 
   uint64_t frame = GetCurrentFrame();
   // scene_fx_trace logs the decisions over the next 3 whole frames.
@@ -1417,7 +1433,11 @@ void SceneEffects::ComputeEffects(RenderTarget& color_rt, const Rect& rect,
 
   PrefilterDepth();
   if (volumetrics || fog || gi) {
-    EstimateSkyColor(color_rt, rect, screen_offset_x, screen_offset_y);
+    // Only where the 3D was drawn: letterbox bars have the sky's depth too.
+    Rect sky_rect = rect;
+    if (ClipToSceneDraws(sky_rect)) {
+      EstimateSkyColor(color_rt, sky_rect, screen_offset_x, screen_offset_y);
+    }
   }
   ao_computed_ = false;
   gi_computed_ = false;
@@ -1713,9 +1733,26 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
                  &constants, composite_constants_, sizeof(composite_constants_));
 }
 
-void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& rect,
+bool SceneEffects::ClipToSceneDraws(Rect& rect) const {
+  if (!scene_draw_rect_valid_) {
+    return rect.right > rect.left && rect.bottom > rect.top;
+  }
+  rect.left = std::max(rect.left, scene_draw_rect_.left);
+  rect.top = std::max(rect.top, scene_draw_rect_.top);
+  rect.right = std::min(rect.right, scene_draw_rect_.right);
+  rect.bottom = std::min(rect.bottom, scene_draw_rect_.bottom);
+  return rect.right > rect.left && rect.bottom > rect.top;
+}
+
+void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rect,
                                     int32_t screen_offset_x, int32_t screen_offset_y,
                                     bool sdr, bool trace) {
+  // An 8-bit scene: only where its 3D was drawn (not the letterbox bars of
+  // the title and cutscenes, which have the sky's depth).
+  Rect rect = tile_rect;
+  if (sdr && !ClipToSceneDraws(rect)) {
+    return;
+  }
   bool multiply = ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_;
   bool add = fog_enabled_ || volumetrics_computed_ || reflections_computed_;
   if (!multiply && !add) {
