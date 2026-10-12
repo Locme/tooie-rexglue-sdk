@@ -68,18 +68,15 @@ REXCVAR_DEFINE_INT32(anisotropic_override, 3, "GPU",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(draw_resolution_scale_x, 1, "GPU", "Draw resolution scale X (1 = no scaling)")
-    .range(1, 8)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .range(1, 8);
 
 REXCVAR_DEFINE_INT32(draw_resolution_scale_y, 1, "GPU", "Draw resolution scale Y (1 = no scaling)")
-    .range(1, 8)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .range(1, 8);
 
 REXCVAR_DEFINE_INT32(resolution_scale, 1, "GPU",
                      "Draw resolution scale for both X and Y axes (same as setting "
                      "draw_resolution_scale_x and draw_resolution_scale_y)")
-    .range(1, 8)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .range(1, 8);
 
 REXCVAR_DEFINE_BOOL(pre_mask_resolve_l2_block, true, "GPU",
                     "Pre-mask scaled resolve L2 blocks to the write range before iterating");

@@ -31,6 +31,7 @@
 #include <rex/graphics/flags.h>
 #include <rex/graphics/graphics_system.h>
 #include <rex/graphics/pipeline/shader/shader.h>
+#include <rex/graphics/pipeline/texture/cache.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/sampler_info.h>
 #include <rex/graphics/xenos.h>
@@ -340,7 +341,82 @@ void CommandProcessor::Shutdown() {
 }
 
 void CommandProcessor::InitializeShaderStorage(const std::filesystem::path& cache_root,
-                                               uint32_t title_id, bool blocking) {}
+                                               uint32_t title_id, bool blocking) {
+  shader_storage_initialized_ = true;
+  shader_storage_cache_root_ = cache_root;
+  shader_storage_title_id_ = title_id;
+  shader_storage_blocking_ = blocking;
+}
+
+void CommandProcessor::RebuildContextIfRequested() {
+  // Wait one more frame after the request: settings change X and Y one after
+  // the other, and a swap landing between the two would rebuild twice.
+  if (!context_rebuild_armed_) {
+    context_rebuild_armed_ = context_rebuild_requested_.exchange(false);
+    return;
+  }
+  context_rebuild_requested_.store(false);
+  context_rebuild_armed_ = false;
+  uint32_t scale_x, scale_y;
+  TextureCache::GetConfigDrawResolutionScale(scale_x, scale_y);
+  if (scale_x == context_draw_resolution_scale_x_ && scale_y == context_draw_resolution_scale_y_) {
+    return;
+  }
+  REXGPU_INFO("Draw resolution scale {}x{} -> {}x{}: rebuilding the GPU context",
+              context_draw_resolution_scale_x_, context_draw_resolution_scale_y_, scale_x, scale_y);
+  uint32_t previous_scale_x = context_draw_resolution_scale_x_;
+  uint32_t previous_scale_y = context_draw_resolution_scale_y_;
+  context_draw_resolution_scale_x_ = scale_x;
+  context_draw_resolution_scale_y_ = scale_y;
+
+  // The active shaders belong to the pipeline cache that is about to go away,
+  // and the game may keep using them without loading them again; keep their
+  // microcode (big-endian, as LoadShader takes it) to load them again.
+  auto save_ucode = [](const Shader* shader) {
+    std::vector<uint32_t> ucode;
+    if (shader) {
+      ucode = shader->ucode_data();
+      for (uint32_t& dword : ucode) {
+        dword = rex::byte_swap(dword);
+      }
+    }
+    return ucode;
+  };
+  std::vector<uint32_t> vertex_ucode = save_ucode(active_vertex_shader_);
+  std::vector<uint32_t> pixel_ucode = save_ucode(active_pixel_shader_);
+  active_vertex_shader_ = nullptr;
+  active_pixel_shader_ = nullptr;
+
+  ShutdownContext();
+  if (!SetupContext()) {
+    // Usually out of GPU memory for the bigger scaled buffers: go back to the
+    // scale that worked instead of ending the game.
+    REXGPU_ERROR("Draw resolution scale {}x{} failed, going back to {}x{}", scale_x, scale_y,
+                 previous_scale_x, previous_scale_y);
+    ShutdownContext();
+    rex::cvar::SetFlagByName("draw_resolution_scale_x", std::to_string(previous_scale_x));
+    rex::cvar::SetFlagByName("draw_resolution_scale_y", std::to_string(previous_scale_y));
+    context_rebuild_requested_.store(false);
+    TextureCache::GetConfigDrawResolutionScale(context_draw_resolution_scale_x_,
+                                               context_draw_resolution_scale_y_);
+    if (!SetupContext()) {
+      rex::FatalError("Unable to set up the GPU context again after a draw resolution scale change");
+      return;
+    }
+  }
+  if (shader_storage_initialized_) {
+    InitializeShaderStorage(std::filesystem::path(shader_storage_cache_root_),
+                            shader_storage_title_id_, shader_storage_blocking_);
+  }
+  if (!vertex_ucode.empty()) {
+    active_vertex_shader_ = LoadShader(xenos::ShaderType::kVertex, 0, vertex_ucode.data(),
+                                       uint32_t(vertex_ucode.size()));
+  }
+  if (!pixel_ucode.empty()) {
+    active_pixel_shader_ = LoadShader(xenos::ShaderType::kPixel, 0, pixel_ucode.data(),
+                                      uint32_t(pixel_ucode.size()));
+  }
+}
 
 void CommandProcessor::CallInThread(std::function<void()> fn) {
   if (pending_fns_.empty() && system::XThread::IsInThread(worker_thread_.get())) {
@@ -383,6 +459,8 @@ void CommandProcessor::SetDesiredSwapPostEffect(SwapPostEffect swap_post_effect)
 }
 
 void CommandProcessor::WorkerThreadMain() {
+  TextureCache::GetConfigDrawResolutionScale(context_draw_resolution_scale_x_,
+                                             context_draw_resolution_scale_y_);
   if (!SetupContext()) {
     rex::FatalError("Unable to setup command processor internal state");
     return;
@@ -1145,6 +1223,7 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
 
   FrameLogOnSwap();
   IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
+  RebuildContextIfRequested();
 
   ++counter_;
   return true;
