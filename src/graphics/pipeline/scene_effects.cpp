@@ -163,6 +163,22 @@ REXCVAR_DEFINE_BOOL(scene_fx_16bit, false, "GPU/Effects",
 REXCVAR_DEFINE_BOOL(scene_fx_retro_16bit_color, false, "GPU/Effects",
                     "Retro: the N64's 16-bit color (5 bits per channel with its ordered "
                     "dither pattern) on the final image") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_retro_crt, false, "GPU/Effects",
+                    "Retro: CRT look on the final image (240 scanlines and an aperture "
+                    "grille)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_retro_crt_scanlines, 0.6, "GPU/Effects",
+                      "CRT scanline darkness (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_retro_crt_mask, 0.3, "GPU/Effects",
+                      "CRT aperture grille strength (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_INT32(scene_fx_colorblind, 0, "GPU/Effects",
+                     "Colorblind correction of the final image: 0 off, 1 deuteranopia, 2 "
+                     "protanopia, 3 tritanopia")
+    .range(0, 3) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_colorblind_strength, 1.0, "GPU/Effects",
+                      "Colorblind correction strength (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_sharpen, false, "GPU/Effects",
                     "Contrast-adaptive sharpening of the final image") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_sharpen_amount, 0.5, "GPU/Effects", "Sharpening strength")
@@ -305,6 +321,7 @@ struct ImageConstants {
   float white[4];
   float finish[4];
   float retro[4];
+  float colorblind[4];
 };
 
 // fx_effect_flags, scene_fx_debug and fx_composite_mode, as in
@@ -454,7 +471,8 @@ bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
 
 bool SceneEffects::AnyImageEffectEnabled() {
   return REXCVAR_GET(scene_fx_sharpen) || REXCVAR_GET(scene_fx_grading) ||
-         REXCVAR_GET(scene_fx_smaa) || REXCVAR_GET(scene_fx_retro_16bit_color);
+         REXCVAR_GET(scene_fx_smaa) || REXCVAR_GET(scene_fx_retro_16bit_color) ||
+         REXCVAR_GET(scene_fx_retro_crt) || REXCVAR_GET(scene_fx_colorblind) > 0;
 }
 
 bool SceneEffects::SunShadowsNeeded() {
@@ -1793,7 +1811,9 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
   bool grading = REXCVAR_GET(scene_fx_grading);
   bool smaa = REXCVAR_GET(scene_fx_smaa);
   bool retro_color = REXCVAR_GET(scene_fx_retro_16bit_color);
-  if (!sharpen && !grading && !smaa && !retro_color) {
+  bool crt = REXCVAR_GET(scene_fx_retro_crt);
+  int32_t colorblind = REXCVAR_GET(scene_fx_colorblind);
+  if (!sharpen && !grading && !smaa && !retro_color && !crt && colorblind <= 0) {
     return;
   }
   // The image, copied to read its neighborhoods.
@@ -1840,11 +1860,15 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
   }
   ic.finish[3] = REXCVAR_GET(scene_fx_16bit) ? 1.0f : 0.0f;
   ic.retro[0] = retro_color ? 1.0f : 0.0f;
+  ic.retro[1] = crt ? float(REXCVAR_GET(scene_fx_retro_crt_scanlines)) : 0.0f;
+  ic.retro[2] = crt ? float(REXCVAR_GET(scene_fx_retro_crt_mask)) : 0.0f;
+  ic.colorblind[0] = float(std::clamp(colorblind, 0, 3));
+  ic.colorblind[1] = float(REXCVAR_GET(scene_fx_colorblind_strength));
   if (trace) {
     REXGPU_INFO(
-        "Scene effects trace: image effects (SMAA {}, sharpen {}, grading {}, N64 color {}) on "
-        "{}x{}",
-        image == Texture::kSmaaImage, sharpen, grading, retro_color, width, height);
+        "Scene effects trace: image effects (SMAA {}, sharpen {}, grading {}, N64 color {}, CRT "
+        "{}) on {}x{}",
+        image == Texture::kSmaaImage, sharpen, grading, retro_color, crt, width, height);
   }
   DrawFullscreen(Draw::kImage, color_rt, rect, {Source(image)}, &constants, &ic, sizeof(ic));
 }

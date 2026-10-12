@@ -158,6 +158,9 @@ const char* const kResolutionScales[] = {"1x (native)", "2x", "3x"};
 const int kResolutionScaleValues[] = {1, 2, 3};
 const char* const kAnisotropy[] = {"Game's own", "Off", "2x", "4x", "8x", "16x"};
 const int kAnisotropyValues[] = {-1, 0, 2, 3, 4, 5};
+const char* const kColorblindTypes[] = {"Off", "Deuteranopia (green)", "Protanopia (red)",
+                                         "Tritanopia (blue)"};
+const int kColorblindValues[] = {0, 1, 2, 3};
 const char* const kAntiAliasingValues[] = {"none", "fxaa", "fxaa_extreme", "smaa"};
 const char* const kAntiAliasingLabels[] = {"Off", "FXAA", "FXAA (extreme)", "SMAA"};
 
@@ -356,6 +359,25 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     Description(
         "The N64's 16-bit framebuffer: 5 bits per channel with its ordered dither pattern, "
         "on the final image.");
+    ImGui::PopID();
+  }
+
+  if (ImGui::CollapsingHeader("Colorblind Correction")) {
+    ImGui::PushID("colorblind");
+    Description(
+        "Moves the color differences a colorblind eye can't see to ones it can "
+        "(daltonization).");
+    ComboCvar("Type", "scene_fx_colorblind", kColorblindTypes, kColorblindValues,
+              int(std::size(kColorblindTypes)));
+    SliderCvar("Strength", "scene_fx_colorblind_strength", 0.0f, 1.0f);
+    ImGui::PopID();
+  }
+
+  if (EffectHeader("Retro: CRT", "scene_fx_retro_crt")) {
+    ImGui::PushID("retro_crt");
+    Description("A CRT TV's look: 240 scanlines and an aperture grille.");
+    SliderCvar("Scanlines", "scene_fx_retro_crt_scanlines", 0.0f, 1.0f);
+    SliderCvar("Grille", "scene_fx_retro_crt_mask", 0.0f, 1.0f);
     ImGui::PopID();
   }
 

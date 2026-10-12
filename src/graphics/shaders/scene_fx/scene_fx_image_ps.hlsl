@@ -17,9 +17,36 @@ FX_EXTRA_CONSTANTS_BLOCK(1) {
   float4 fx_image_white;
   // x = shadow lift, y = vignette, z = film grain, w = 1 to dither to 8 bits.
   float4 fx_image_finish;
-  // x = 1 for the N64's 16-bit color (5 bits per channel, magic square dither).
+  // x = 1 for the N64's 16-bit color (5 bits per channel, magic square dither),
+  // y = CRT scanline strength (0 = off), z = CRT mask strength.
   float4 fx_image_retro;
+  // x = colorblind correction (0 off, 1 deuteranopia, 2 protanopia, 3
+  // tritanopia), y = its strength.
+  float4 fx_image_colorblind;
 };
+
+// Daltonization: the colors a dichromat sees (Machado et al. 2009, severity
+// 1, linear RGB), and the difference they lose moved to channels they see.
+float3 FxColorblindCorrect(float3 color, uint mode, float strength) {
+  float3x3 simulate;
+  if (mode == 2u) {  // protanopia
+    simulate = float3x3(0.152286, 1.052583, -0.204868, 0.114503, 0.786281, 0.099216,
+                        -0.003882, -0.048116, 1.051998);
+  } else if (mode == 3u) {  // tritanopia
+    simulate = float3x3(1.255528, -0.076749, -0.178779, -0.078411, 0.930809, 0.147602,
+                        0.004733, 0.691367, 0.303900);
+  } else {  // deuteranopia
+    simulate = float3x3(0.367322, 0.860646, -0.227968, 0.280085, 0.672501, 0.047413,
+                        -0.011820, 0.042940, 0.968881);
+  }
+  float3 linear_color = pow(saturate(color), 2.2);
+  float3 error = linear_color - mul(simulate, linear_color);
+  // Red-green losses go to blue and to the brightness, blue-yellow losses
+  // to red and green.
+  float3 shift = mode == 3u ? float3(error.b * 0.7 + error.r, error.b * 0.7 + error.g, 0.0)
+                            : float3(0.0, error.r * 0.7 + error.g, error.r * 0.7 + error.b);
+  return pow(saturate(linear_color + shift * strength), 1.0 / 2.2);
+}
 
 float3 FxLoadImage(int2 pixel) {
   pixel = clamp(pixel, int2(fx_pass_rect.xy), int2(fx_pass_rect.zw) - 1);
@@ -75,6 +102,22 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float grain = FxNoise(position.xy + float2(17.0, 59.0) * float(fx_frame & 255)) - 0.5;
   float midtones = 4.0 * FxLuminance(color) * (1.0 - FxLuminance(color));
   color += grain * fx_image_finish.z * 0.15 * midtones;
+  if (fx_image_colorblind.x > 0.0) {
+    color = FxColorblindCorrect(color, uint(fx_image_colorblind.x), fx_image_colorblind.y);
+  }
+  if (fx_image_retro.y > 0.0 || fx_image_retro.z > 0.0) {
+    // A CRT showing the N64's 240 lines: each line's beam brightest at its
+    // center, darker between lines (brightened back to keep the average), and
+    // an aperture grille of red, green and blue stripes.
+    float scanline = (position.y - float(fx_pass_rect.y)) / rect_size.y * 240.0;
+    float beam = 0.5 + 0.5 * cos(6.2831853 * (frac(scanline) - 0.5));
+    color *= lerp(1.0, (0.35 + 0.65 * beam) * 1.25, fx_image_retro.y);
+    uint stripe = uint(position.x) % 3u;
+    float3 mask = float3(stripe == 0u, stripe == 1u, stripe == 2u);
+    // The other two channels dimmed, the average kept.
+    float dim = 0.6 * fx_image_retro.z;
+    color *= lerp((1.0 - dim).xxx, 1.0.xxx, mask) / (1.0 - dim * (2.0 / 3.0));
+  }
   if (fx_image_retro.x > 0.0) {
     // The RDP's 16-bit framebuffer: 8-bit color + the magic square's 0...7
     // (an eighth of a 5-bit step each), truncated to 5 bits, read back by the
