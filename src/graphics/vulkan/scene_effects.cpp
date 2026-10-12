@@ -774,6 +774,7 @@ bool VulkanSceneEffects::DrawFullscreen(Draw draw, RenderTarget& render_target, 
                                         std::initializer_list<Source> sources,
                                         const void* constants, const void* extra_constants,
                                         size_t extra_constants_size) {
+  command_processor_.PauseOcclusionCounting();
   auto& vulkan_rt = static_cast<VulkanRenderTargetCache::VulkanRenderTarget&>(render_target);
   DrawLayout draw_layout = GetDrawLayout(draw);
   uint32_t source_count =

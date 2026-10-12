@@ -245,6 +245,11 @@ class VulkanCommandProcessor : public CommandProcessor {
   // Returns the text to display in the GPU backend name in the window title.
   std::string GetWindowTitleText() const;
 
+  // Ends the current occlusion counting segment so that the scene effects'
+  // own draws don't count toward a guest query (the next guest draw starts
+  // another).
+  void PauseOcclusionCounting() { CloseOcclusionSegment(); }
+
  protected:
   bool SetupContext() override;
   void ShutdownContext() override;
@@ -437,10 +442,14 @@ class VulkanCommandProcessor : public CommandProcessor {
   void ShutdownOcclusionQueryResources();
   bool BeginGuestOcclusionQuery(uint32_t sample_count_address);
   bool EndGuestOcclusionQuery(uint32_t sample_count_address);
-  bool AcquireOcclusionQueryIndex(uint32_t& host_index_out);
-  void DisableHostOcclusionQueries();
-  uint64_t NormalizeOcclusionSamples(uint64_t samples) const;
-  void WriteGuestOcclusionResult(uint32_t sample_count_address, uint64_t samples);
+  // Begin and end (and copy out) the host query of the current counting
+  // segment; a submission must be open.
+  void OpenOcclusionSegment();
+  void CloseOcclusionSegment();
+  // reason: logged once when host queries were on; nullptr at shutdown.
+  void DisableHostOcclusionQueries(const char* reason);
+  // Product of the draw resolution scales: host samples per guest sample.
+  uint32_t OcclusionSampleScale() const;
   void InvalidateAllVertexBufferResidency();
   void InvalidateVertexBufferResidency(uint32_t vfetch_index);
   void InvalidateVertexBufferResidencyRange(uint32_t first_vfetch, uint32_t last_vfetch);
@@ -738,13 +747,7 @@ class VulkanCommandProcessor : public CommandProcessor {
   uint32_t occlusion_query_readback_memory_type_ = UINT32_MAX;
   VkDeviceSize occlusion_query_readback_memory_size_ = 0;
   uint8_t* occlusion_query_readback_mapping_ = nullptr;
-  uint32_t occlusion_query_cursor_ = 0;
   bool occlusion_query_resources_available_ = false;
-  struct ActiveOcclusionQuery {
-    uint32_t sample_count_address = 0;
-    uint32_t host_index = UINT32_MAX;
-    bool valid = false;
-  } active_occlusion_query_;
   struct VertexBufferState {
     uint32_t address = UINT32_MAX;
     uint32_t size = UINT32_MAX;

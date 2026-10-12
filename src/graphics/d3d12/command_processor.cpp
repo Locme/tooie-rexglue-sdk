@@ -166,11 +166,11 @@ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffe
   auto* sample_counts =
       memory_->TranslatePhysical<xenos::xe_gpu_depth_sample_counts*>(sample_count_addr);
   if (!sample_counts) {
-    DisableHostOcclusionQueries();
+    DisableHostOcclusionQueries("the sample count address is outside guest memory");
     return true;
   }
 
-  auto write_fallback_result = [sample_counts, kQueryFinished]() -> bool {
+  auto write_fallback_result = [this, sample_counts, kQueryFinished]() -> bool {
     auto fake_sample_count = REXCVAR_GET(query_occlusion_fake_sample_count);
     if (fake_sample_count < 0) {
       return true;
@@ -183,6 +183,7 @@ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffe
     if (is_end_via_z_pass || is_end_via_z_fail) {
       sample_counts->ZPass_A = fake_sample_count;
       sample_counts->Total_A = fake_sample_count;
+      NoteOcclusionQueryResult(false);
     }
     return true;
   };
@@ -194,24 +195,13 @@ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffe
   bool is_end = is_end_via_z_pass || is_end_via_z_fail;
 
   if (!is_end) {
-    if (active_occlusion_query_.valid &&
-        active_occlusion_query_.sample_count_address != sample_count_addr) {
-      DisableHostOcclusionQueries();
-      return write_fallback_result();
-    }
     if (!BeginGuestOcclusionQuery(sample_count_addr)) {
       return write_fallback_result();
     }
     return true;
   }
 
-  if (!active_occlusion_query_.valid ||
-      active_occlusion_query_.sample_count_address != sample_count_addr) {
-    DisableHostOcclusionQueries();
-    return write_fallback_result();
-  }
-
-  if (!EndGuestOcclusionQuery(sample_count_addr, sample_counts)) {
+  if (!EndGuestOcclusionQuery(sample_count_addr)) {
     return write_fallback_result();
   }
 
@@ -2350,6 +2340,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
   if (!BeginSubmission(true)) {
     return false;
   }
+  if (!occlusion_counter_.segment_open && occlusion_counter_.counting) {
+    OpenOcclusionSegment();
+  }
 
   // Process primitives.
   PrimitiveProcessor::ProcessingResult primitive_processing_result;
@@ -3433,11 +3426,9 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
   if (submission_open_) {
     assert_false(scratch_buffer_used_);
 
-    if (active_occlusion_query_.valid && occlusion_query_heap_) {
-      deferred_command_list_.D3DEndQuery(occlusion_query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION,
-                                         active_occlusion_query_.host_index);
-      active_occlusion_query_ = {};
-    }
+    // A query can't span command lists: the counting segment ends here and
+    // the next draw starts another while a guest query is open.
+    CloseOcclusionSegment();
 
     pipeline_cache_->EndSubmission();
 
@@ -4858,8 +4849,7 @@ ID3D12Resource* D3D12CommandProcessor::RequestReadbackBuffer(uint32_t size) {
 }
 
 bool D3D12CommandProcessor::InitializeOcclusionQueryResources() {
-  active_occlusion_query_ = {};
-  occlusion_query_cursor_ = 0;
+  ResetOcclusionCounter();
   occlusion_query_resources_available_ = false;
   occlusion_query_heap_.Reset();
   occlusion_query_readback_.Reset();
@@ -4911,7 +4901,7 @@ bool D3D12CommandProcessor::InitializeOcclusionQueryResources() {
 }
 
 void D3D12CommandProcessor::ShutdownOcclusionQueryResources() {
-  DisableHostOcclusionQueries();
+  DisableHostOcclusionQueries(nullptr);
 
   if (occlusion_query_readback_ && occlusion_query_readback_mapping_) {
     occlusion_query_readback_->Unmap(0, nullptr);
@@ -4921,125 +4911,100 @@ void D3D12CommandProcessor::ShutdownOcclusionQueryResources() {
   occlusion_query_heap_.Reset();
 }
 
-bool D3D12CommandProcessor::AcquireOcclusionQueryIndex(uint32_t& host_index_out) {
-  if (occlusion_query_cursor_ >= kMaxOcclusionQueries) {
-    occlusion_query_cursor_ = 0;
+void D3D12CommandProcessor::OpenOcclusionSegment() {
+  if (occlusion_counter_.segment_open || !occlusion_query_resources_available_ ||
+      !occlusion_query_heap_) {
+    return;
   }
-  host_index_out = occlusion_query_cursor_++;
-  return true;
-}
-
-void D3D12CommandProcessor::DisableHostOcclusionQueries() {
-  if (active_occlusion_query_.valid && occlusion_query_heap_) {
-    uint32_t host_index = active_occlusion_query_.host_index;
-    // Clear before EndSubmission to prevent the EndSubmission safety net from issuing a second
-    // EndQuery for the same index.
-    active_occlusion_query_ = {};
-    if (BeginSubmission(true)) {
-      deferred_command_list_.D3DEndQuery(occlusion_query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION,
-                                         host_index);
-      EndSubmission(false);
-    }
-  } else {
-    active_occlusion_query_ = {};
-  }
-  occlusion_query_cursor_ = 0;
-  occlusion_query_resources_available_ = false;
-}
-
-bool D3D12CommandProcessor::BeginGuestOcclusionQuery(uint32_t sample_count_address) {
-  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_) {
-    return false;
-  }
-  if (active_occlusion_query_.valid) {
-    REXGPU_WARN(
-        "D3D12CommandProcessor: Occlusion query begin issued while another query is active");
-    DisableHostOcclusionQueries();
-    return false;
-  }
-
-  uint32_t host_index = 0;
-  if (!AcquireOcclusionQueryIndex(host_index)) {
-    return false;
-  }
-  if (!BeginSubmission(true)) {
-    return false;
-  }
-
+  uint32_t host_index = uint32_t(occlusion_counter_.segment_next % kMaxOcclusionQueries);
   deferred_command_list_.D3DBeginQuery(occlusion_query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION,
                                        host_index);
-  active_occlusion_query_.sample_count_address = sample_count_address;
-  active_occlusion_query_.host_index = host_index;
-  active_occlusion_query_.valid = true;
-  return true;
+  occlusion_counter_.segment_open = true;
 }
 
-bool D3D12CommandProcessor::EndGuestOcclusionQuery(
-    uint32_t sample_count_address, xenos::xe_gpu_depth_sample_counts* sample_counts) {
-  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_ ||
-      !active_occlusion_query_.valid || !occlusion_query_heap_ || !occlusion_query_readback_) {
-    return false;
+void D3D12CommandProcessor::CloseOcclusionSegment() {
+  if (!occlusion_counter_.segment_open) {
+    return;
   }
-
-  uint32_t host_index = active_occlusion_query_.host_index;
-  active_occlusion_query_ = {};
-
-  if (!BeginSubmission(true)) {
-    return false;
+  occlusion_counter_.segment_open = false;
+  uint32_t host_index = uint32_t(occlusion_counter_.segment_next % kMaxOcclusionQueries);
+  ++occlusion_counter_.segment_next;
+  if (!occlusion_query_heap_ || !occlusion_query_readback_) {
+    return;
   }
-
   deferred_command_list_.D3DEndQuery(occlusion_query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION,
                                      host_index);
   deferred_command_list_.D3DResolveQueryData(
       occlusion_query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION, host_index, 1,
       occlusion_query_readback_.Get(), sizeof(uint64_t) * host_index);
+}
 
-  if (!EndSubmission(false)) {
+void D3D12CommandProcessor::DisableHostOcclusionQueries(const char* reason) {
+  if (reason && occlusion_query_resources_available_) {
+    NoteHostOcclusionQueriesDisabled(reason);
+  }
+  if (occlusion_counter_.segment_open && BeginSubmission(true)) {
+    CloseOcclusionSegment();
+    EndSubmission(false);
+  }
+  ResetOcclusionCounter();
+  occlusion_query_resources_available_ = false;
+}
+
+bool D3D12CommandProcessor::BeginGuestOcclusionQuery(uint32_t sample_count_address) {
+  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_ ||
+      !occlusion_query_heap_ || !occlusion_query_readback_) {
     return false;
   }
-
-  uint64_t query_submission = submission_current_ ? submission_current_ - 1 : 0;
-  CheckSubmissionFence(query_submission);
-  if (submission_completed_ < query_submission) {
+  if (!BeginSubmission(true)) {
     return false;
   }
-  if (!occlusion_query_readback_mapping_) {
-    return false;
-  }
-
-  uint64_t samples = occlusion_query_readback_mapping_[host_index];
-  samples = NormalizeOcclusionSamples(samples);
-  WriteGuestOcclusionResult(sample_counts, samples);
+  // A new segment from here; this begin's counter value is the samples of all
+  // segments before it, written once the GPU has them (at the next end).
+  CloseOcclusionSegment();
+  AddPendingOcclusionBegin(sample_count_address);
+  occlusion_counter_.counting = true;
+  OpenOcclusionSegment();
   return true;
 }
 
-uint64_t D3D12CommandProcessor::NormalizeOcclusionSamples(uint64_t samples) const {
-  if (samples == 0 || !texture_cache_) {
-    return samples;
+bool D3D12CommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_address) {
+  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_ ||
+      !occlusion_query_heap_ || !occlusion_query_readback_) {
+    return false;
   }
-  uint64_t scale_x = texture_cache_->draw_resolution_scale_x();
-  uint64_t scale_y = texture_cache_->draw_resolution_scale_y();
-  uint64_t scale = scale_x * scale_y;
-  if (scale <= 1) {
-    return samples;
+  if (!BeginSubmission(true)) {
+    return false;
   }
-  return (samples + (scale >> 1)) / scale;
+  CloseOcclusionSegment();
+  occlusion_counter_.counting = true;
+  uint64_t end_serial = occlusion_counter_.segment_next;
+  {
+    if (!EndSubmission(false)) {
+      return false;
+    }
+    uint64_t query_submission = submission_current_ ? submission_current_ - 1 : 0;
+    CheckSubmissionFence(query_submission);
+    if (submission_completed_ < query_submission || !occlusion_query_readback_mapping_) {
+      return false;
+    }
+    const uint64_t* results = occlusion_query_readback_mapping_;
+    ResolveOcclusionCounters(results, kMaxOcclusionQueries, end_serial, sample_count_address,
+                             OcclusionSampleScale());
+  }
+  NoteOcclusionQueryResult(true);
+  // Counting goes on for the queries still open.
+  if (BeginSubmission(true)) {
+    OpenOcclusionSegment();
+  }
+  return true;
 }
 
-void D3D12CommandProcessor::WriteGuestOcclusionResult(
-    xenos::xe_gpu_depth_sample_counts* sample_counts, uint64_t samples) {
-  if (!sample_counts) {
-    return;
+uint32_t D3D12CommandProcessor::OcclusionSampleScale() const {
+  if (!texture_cache_) {
+    return 1;
   }
-  uint32_t clamped = samples > uint64_t(UINT32_MAX) ? UINT32_MAX : uint32_t(samples);
-  sample_counts->Total_A = clamped;
-  sample_counts->Total_B = 0;
-  sample_counts->ZPass_A = clamped;
-  sample_counts->ZPass_B = 0;
-  sample_counts->ZFail_A = 0;
-  sample_counts->ZFail_B = 0;
-  sample_counts->StencilFail_A = 0;
-  sample_counts->StencilFail_B = 0;
+  return texture_cache_->draw_resolution_scale_x() * texture_cache_->draw_resolution_scale_y();
 }
 
 void D3D12CommandProcessor::WriteGammaRampSRV(bool is_pwl,

@@ -130,6 +130,40 @@ class CommandProcessor {
   bool Restore(::rex::stream::ByteStream* stream);
 
  protected:
+  // Occlusion query diagnostics: how the guest's queries were answered (the
+  // host GPU's sample count or query_occlusion_fake_sample_count), logged
+  // every 10 s while queries are issued, and once why host queries stopped.
+  void NoteOcclusionQueryResult(bool from_host);
+  void NoteHostOcclusionQueriesDisabled(const char* reason);
+  // Occlusion counting for EVENT_WRITE_ZPD. Each event writes the running
+  // sample counter to its address (a query's result is its end's value minus
+  // its begin's, so the begins and ends of different queries interleave).
+  // The host counts in segments, one host query between consecutive events,
+  // numbered by serial (host query index = serial % the ring's size).
+  struct OcclusionCounter {
+    bool counting = false;  // segments are kept open from the first event on
+    bool segment_open = false;
+    uint64_t segment_next = 0;
+    // Samples of all segments before cumulative_serial.
+    uint64_t cumulative = 0;
+    uint64_t cumulative_serial = 0;
+    // Begin events whose counter value isn't known yet: (serial, address).
+    std::vector<std::pair<uint64_t, uint32_t>> pending;
+  };
+  OcclusionCounter occlusion_counter_;
+  // Records a begin event at the current serial (its value is written with
+  // the next end).
+  void AddPendingOcclusionBegin(uint32_t address);
+  // Once the GPU has finished every segment before end_serial (their samples
+  // in segment_samples[serial % ring_size]): writes the pending begins' and
+  // the end's counter values, divided by the draw resolution scale (scale).
+  void ResolveOcclusionCounters(const uint64_t* segment_samples, uint32_t ring_size,
+                                uint64_t end_serial, uint32_t end_address, uint32_t scale);
+  void ResetOcclusionCounter() { occlusion_counter_ = {}; }
+  uint64_t occlusion_query_host_results_ = 0;
+  uint64_t occlusion_query_fake_results_ = 0;
+  uint64_t occlusion_query_stats_time_ = 0;
+
   struct IndexBufferInfo {
     xenos::IndexFormat format = xenos::IndexFormat::kInt16;
     xenos::Endian endianness = xenos::Endian::kNone;

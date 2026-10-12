@@ -498,6 +498,7 @@ bool D3D12SceneEffects::DrawFullscreen(Draw draw, RenderTarget& render_target, c
                                        std::initializer_list<Source> sources,
                                        const void* constants, const void* extra_constants,
                                        size_t extra_constants_size) {
+  command_processor_.PauseOcclusionCounting();
   auto& d3d12_rt = static_cast<D3D12RenderTargetCache::D3D12RenderTarget&>(render_target);
   DXGI_FORMAT format =
       d3d12_render_target_cache_.GetColorDrawDXGIFormat(d3d12_rt.key().GetColorFormat());

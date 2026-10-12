@@ -1462,10 +1462,84 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* re
     if (is_end_via_z_pass || is_end_via_z_fail) {
       pSampleCounts->ZPass_A = fake_sample_count;
       pSampleCounts->Total_A = fake_sample_count;
+      NoteOcclusionQueryResult(false);
     }
   }
 
   return true;
+}
+
+void CommandProcessor::NoteOcclusionQueryResult(bool from_host) {
+  if (from_host) {
+    ++occlusion_query_host_results_;
+  } else {
+    ++occlusion_query_fake_results_;
+  }
+  uint64_t now = rex::chrono::Clock::QueryHostUptimeMillis();
+  if (!occlusion_query_stats_time_) {
+    occlusion_query_stats_time_ = now;
+    return;
+  }
+  if (now - occlusion_query_stats_time_ < 10000) {
+    return;
+  }
+  REXGPU_INFO(
+      "Occlusion queries: {} answered by the GPU, {} with the fake sample count ({}) over the "
+      "last {:.0f} s",
+      occlusion_query_host_results_, occlusion_query_fake_results_,
+      REXCVAR_GET(query_occlusion_fake_sample_count),
+      double(now - occlusion_query_stats_time_) * 0.001);
+  occlusion_query_host_results_ = 0;
+  occlusion_query_fake_results_ = 0;
+  occlusion_query_stats_time_ = now;
+}
+
+void CommandProcessor::AddPendingOcclusionBegin(uint32_t address) {
+  auto& pending = occlusion_counter_.pending;
+  if (pending.size() >= 4096) {
+    // Begins never ended; drop the oldest.
+    pending.erase(pending.begin(), pending.begin() + 1024);
+  }
+  pending.emplace_back(occlusion_counter_.segment_next, address);
+}
+
+void CommandProcessor::ResolveOcclusionCounters(const uint64_t* segment_samples,
+                                                uint32_t ring_size, uint64_t end_serial,
+                                                uint32_t end_address, uint32_t scale) {
+  OcclusionCounter& counter = occlusion_counter_;
+  auto advance = [&](uint64_t serial) {
+    if (serial - counter.cumulative_serial > ring_size) {
+      // Overwritten in the ring before being read: lost.
+      counter.cumulative_serial = serial - ring_size;
+    }
+    for (; counter.cumulative_serial < serial; ++counter.cumulative_serial) {
+      counter.cumulative += segment_samples[counter.cumulative_serial % ring_size];
+    }
+  };
+  auto write = [&](uint32_t address) {
+    auto* sample_counts = memory_->TranslatePhysical<xe_gpu_depth_sample_counts*>(address);
+    if (!sample_counts) {
+      return;
+    }
+    uint32_t value = uint32_t(counter.cumulative / std::max(scale, uint32_t(1)));
+    std::memset(sample_counts, 0, sizeof(xe_gpu_depth_sample_counts));
+    sample_counts->ZPass_A = value;
+    sample_counts->Total_A = value;
+  };
+  for (const auto& [serial, address] : counter.pending) {
+    advance(std::min(serial, end_serial));
+    write(address);
+  }
+  counter.pending.clear();
+  advance(end_serial);
+  write(end_address);
+}
+
+void CommandProcessor::NoteHostOcclusionQueriesDisabled(const char* reason) {
+  REXGPU_WARN(
+      "Occlusion queries: host queries turned off for the rest of the run ({}); every query now "
+      "reports {} samples",
+      reason, REXCVAR_GET(query_occlusion_fake_sample_count));
 }
 
 bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32_t packet,
