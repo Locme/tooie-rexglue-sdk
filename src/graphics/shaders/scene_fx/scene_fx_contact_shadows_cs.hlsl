@@ -16,6 +16,12 @@ FX_BINDING(4) SamplerState fx_clamp : register(s0);
 FX_SUN_CONSTANTS(5)
 FX_BINDING(6) FX_FORMAT_R16F RWTexture2D<float> fx_contact : register(u0);
 
+float3 FxEffectViewPosition(int2 texel) {
+  texel = clamp(texel, int2(0, 0), FxEffectSize(fx_effect_scale) - 1);
+  return FxViewPosition(FxEffectScreen(texel, fx_effect_scale),
+                        fx_effect_depth.Load(int3(texel, 0)));
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
   if (any(int2(id.xy) >= FxEffectSize(fx_effect_scale))) {
@@ -36,6 +42,22 @@ void main(uint3 id : SV_DispatchThreadID) {
     return;
   }
 
+  // How squarely the surface faces the sun, for rays that leave the screen
+  // before finding anything: a surface facing away from (or along) the sun
+  // is its own shadow, which its ray otherwise finds by going into it. Lit
+  // there instead, strips along the screen's edges the sun is toward were.
+  float3 right = FxEffectViewPosition(texel + int2(1, 0)) - position;
+  float3 left = position - FxEffectViewPosition(texel - int2(1, 0));
+  float3 down = FxEffectViewPosition(texel + int2(0, 1)) - position;
+  float3 up = position - FxEffectViewPosition(texel - int2(0, 1));
+  float3 dx = abs(right.z) < abs(left.z) ? right : left;
+  float3 dy = abs(down.z) < abs(up.z) ? down : up;
+  float3 normal = normalize(cross(dx, dy));
+  if (dot(normal, position) > 0.0) {
+    normal = -normal;
+  }
+  float off_screen_occlusion = saturate((0.2 - dot(normal, fx_sun_direction.xyz)) / 0.2);
+
   float ray_length = fx_sun_contact.x;
   float thickness = fx_sun_contact.y;
   uint step_count = max(uint(fx_sun_contact.z), 1u);
@@ -53,6 +75,7 @@ void main(uint3 id : SV_DispatchThreadID) {
                  (sample_position.z * float2(fx_inv_p00, fx_inv_p11));
     float2 screen = (ndc * float2(0.5, -0.5) + 0.5) * float2(fx_scene_size);
     if (any(screen < 0.0) || any(screen >= float2(fx_scene_size))) {
+      occlusion = off_screen_occlusion;
       break;
     }
     float scene_distance = fx_depth.Load(int3(int2(screen), 0));
