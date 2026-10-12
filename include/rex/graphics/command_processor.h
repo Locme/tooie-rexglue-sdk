@@ -135,6 +135,11 @@ class CommandProcessor {
   bool Save(::rex::stream::ByteStream* stream);
   bool Restore(::rex::stream::ByteStream* stream);
 
+  // Save states (paused only): the ring buffer's read and write pointers.
+  // Setting them also writes the read pointer back to the guest.
+  void GetRingPointers(uint32_t* read, uint32_t* write) const;
+  void SetRingPointers(uint32_t read, uint32_t write);
+
  protected:
   // Occlusion query diagnostics: how the guest's queries were answered (the
   // host GPU's sample count or query_occlusion_fake_sample_count), logged

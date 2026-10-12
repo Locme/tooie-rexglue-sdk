@@ -780,6 +780,63 @@ bool Memory::Restore(stream::ByteStream* stream) {
   return true;
 }
 
+uint8_t* Memory::SnapshotShadow(const BaseHeap& heap) {
+  constexpr size_t kBackingSize = 0x120000000ull;
+  if (!snapshot_view_) {
+    snapshot_view_ = reinterpret_cast<uint8_t*>(rex::memory::MapFileView(
+        mapping_, nullptr, kBackingSize, rex::memory::PageAccess::kReadWrite, 0));
+    if (!snapshot_view_) {
+      REXSYS_ERROR("Memory: could not map a view for save states");
+      return nullptr;
+    }
+  }
+  // The heap's first byte in the backing, from the view that holds it.
+  const uint8_t* host = heap.TranslateRelative<const uint8_t*>(0);
+  for (size_t n = 0; n < rex::countof(map_info); ++n) {
+    const uint8_t* view_base = virtual_membase_ + map_info[n].virtual_address_start;
+    const uint64_t view_size = map_info[n].virtual_address_end - map_info[n].virtual_address_start;
+    if (host >= view_base && uint64_t(host - view_base) <= view_size) {
+      return snapshot_view_ + map_info[n].target_address + uint64_t(host - view_base);
+    }
+  }
+  return nullptr;
+}
+
+bool Memory::SaveState(std::vector<uint8_t>* out) {
+  auto lock = global_critical_region_.Acquire();
+  BaseHeap* data_heaps[] = {&heaps_.v00000000, &heaps_.v40000000, &heaps_.v80000000,
+                            &heaps_.v90000000, &heaps_.physical};
+  BaseHeap* view_heaps[] = {&heaps_.vA0000000, &heaps_.vC0000000, &heaps_.vE0000000};
+  size_t size = 0;
+  for (auto* h : data_heaps) size += h->SnapshotSize(true);
+  for (auto* h : view_heaps) size += h->SnapshotSize(false);
+  out->resize(size);
+  size_t pos = 0;
+  for (auto* h : data_heaps) {
+    uint8_t* shadow = SnapshotShadow(*h);
+    if (!shadow) return false;
+    h->SaveSnapshot(*out, pos, shadow);
+  }
+  for (auto* h : view_heaps) h->SaveSnapshot(*out, pos, nullptr);
+  return pos == size;
+}
+
+bool Memory::RestoreState(const std::vector<uint8_t>& in) {
+  auto lock = global_critical_region_.Acquire();
+  BaseHeap* data_heaps[] = {&heaps_.v00000000, &heaps_.v40000000, &heaps_.v80000000,
+                            &heaps_.v90000000, &heaps_.physical};
+  BaseHeap* view_heaps[] = {&heaps_.vA0000000, &heaps_.vC0000000, &heaps_.vE0000000};
+  size_t pos = 0;
+  for (auto* h : data_heaps) {
+    uint8_t* shadow = SnapshotShadow(*h);
+    if (!shadow || !h->RestoreSnapshot(in, pos, shadow)) return false;
+  }
+  for (auto* h : view_heaps) {
+    if (!h->RestoreSnapshot(in, pos, nullptr)) return false;
+  }
+  return pos == in.size();
+}
+
 //=============================================================================
 // Recompiled Code Function Table
 //=============================================================================
@@ -1134,6 +1191,100 @@ uint32_t BaseHeap::GetUnreservedPageCount() {
     count += size - empty_span_start;
   }
   return count;
+}
+
+size_t BaseHeap::SnapshotSize(bool with_pages) {
+  std::lock_guard<std::recursive_mutex> lock(heap_mutex_);
+  size_t size = sizeof(uint32_t) + page_table_.size() * sizeof(PageEntry);
+  if (with_pages) {
+    for (auto& page : page_table_) {
+      if (page.state & memory::kMemoryAllocationCommit) size += page_size_;
+    }
+  }
+  return size;
+}
+
+void BaseHeap::SaveSnapshot(std::vector<uint8_t>& out, size_t& pos, const uint8_t* shadow) {
+  std::lock_guard<std::recursive_mutex> lock(heap_mutex_);
+  std::memcpy(out.data() + pos, &unreserved_page_count_, sizeof(uint32_t));
+  pos += sizeof(uint32_t);
+  const size_t table_bytes = page_table_.size() * sizeof(PageEntry);
+  std::memcpy(out.data() + pos, page_table_.data(), table_bytes);
+  pos += table_bytes;
+  if (!shadow) return;
+  // Committed pages, a run at a time.
+  const size_t count = page_table_.size();
+  for (size_t i = 0; i < count;) {
+    if (!(page_table_[i].state & memory::kMemoryAllocationCommit)) {
+      ++i;
+      continue;
+    }
+    size_t j = i + 1;
+    while (j < count && (page_table_[j].state & memory::kMemoryAllocationCommit)) ++j;
+    const size_t bytes = (j - i) << page_size_shift_;
+    std::memcpy(out.data() + pos, shadow + (i << page_size_shift_), bytes);
+    pos += bytes;
+    i = j;
+  }
+}
+
+bool BaseHeap::RestoreSnapshot(const std::vector<uint8_t>& in, size_t& pos, uint8_t* shadow) {
+  auto global_lock = AcquireHostPageReconcileLock();
+  std::lock_guard<std::recursive_mutex> lock(heap_mutex_);
+  const size_t table_bytes = page_table_.size() * sizeof(PageEntry);
+  if (pos + sizeof(uint32_t) + table_bytes > in.size()) return false;
+  std::memcpy(&unreserved_page_count_, in.data() + pos, sizeof(uint32_t));
+  pos += sizeof(uint32_t);
+  const std::vector<PageEntry> old_table = page_table_;
+  std::memcpy(page_table_.data(), in.data() + pos, table_bytes);
+  pos += table_bytes;
+  const size_t count = page_table_.size();
+  for (size_t i = 0; shadow && i < count;) {
+    if (!(page_table_[i].state & memory::kMemoryAllocationCommit)) {
+      ++i;
+      continue;
+    }
+    size_t j = i + 1;
+    while (j < count && (page_table_[j].state & memory::kMemoryAllocationCommit)) ++j;
+    const size_t bytes = (j - i) << page_size_shift_;
+    if (pos + bytes > in.size()) return false;
+    std::memcpy(shadow + (i << page_size_shift_), in.data() + pos, bytes);
+    pos += bytes;
+    i = j;
+  }
+  // Host protection follows the restored table, a run of equal pages at a
+  // time (where it differs from what it was).
+  auto access_of = [](const PageEntry& page) {
+    if (!(page.state & memory::kMemoryAllocationCommit)) return memory::PageAccess::kNoAccess;
+    if ((page.current_protect & memory::kMemoryProtectRead) &&
+        (page.current_protect & memory::kMemoryProtectWrite)) {
+      return memory::PageAccess::kReadWrite;
+    }
+    if (page.current_protect & memory::kMemoryProtectRead) return memory::PageAccess::kReadOnly;
+    return memory::PageAccess::kNoAccess;
+  };
+  if (page_size_ < memory_->system_page_size_) {
+    return count == 0 || SyncHostPageAccess(0, uint32_t(count) - 1);
+  }
+  for (size_t i = 0; i < count;) {
+    const auto access = access_of(page_table_[i]);
+    size_t j = i + 1;
+    bool changed = access_of(old_table[i]) != access;
+    while (j < count && access_of(page_table_[j]) == access) {
+      changed = changed || access_of(old_table[j]) != access;
+      ++j;
+    }
+    if (changed) {
+      void* addr = TranslateRelative(i << page_size_shift_);
+      if (access != memory::PageAccess::kNoAccess) {
+        rex::memory::AllocFixed(addr, (j - i) << page_size_shift_,
+                                memory::AllocationType::kCommit, access);
+      }
+      rex::memory::Protect(addr, (j - i) << page_size_shift_, access, nullptr);
+    }
+    i = j;
+  }
+  return true;
 }
 
 bool BaseHeap::Save(stream::ByteStream* stream) {

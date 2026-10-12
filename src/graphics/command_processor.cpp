@@ -613,6 +613,22 @@ bool CommandProcessor::Restore(::rex::stream::ByteStream* stream) {
   return true;
 }
 
+void CommandProcessor::GetRingPointers(uint32_t* read, uint32_t* write) const {
+  assert_true(paused_);
+  *read = read_ptr_index_;
+  *write = write_ptr_index_.load();
+}
+
+void CommandProcessor::SetRingPointers(uint32_t read, uint32_t write) {
+  assert_true(paused_);
+  read_ptr_index_ = read;
+  write_ptr_index_.store(write);
+  if (read_ptr_writeback_ptr_) {
+    memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
+                                     read_ptr_index_);
+  }
+}
+
 bool CommandProcessor::SetupContext() {
   return true;
 }
