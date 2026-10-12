@@ -272,7 +272,6 @@ class SceneEffects {
                            uint32_t width, uint32_t height, int32_t screen_offset_x,
                            int32_t screen_offset_y, bool trace);
   void CompositeSdrSceneBeforeOverlay();
-  void CaptureSdrSceneDepthBeforeBlending();
   void CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt, const Rect& rect,
                              uint32_t width, uint32_t height, int32_t screen_offset_x,
                              int32_t screen_offset_y, bool trace);
@@ -364,8 +363,6 @@ class SceneEffects {
     int32_t offset[2];
     bool composited;
     bool resolved;
-    // Before the tile's blended draws.
-    bool depth_captured;
   };
   SdrTile sdr_tiles_[kMaxSdrTiles] = {};
   // The tiles' rectangles and the scene's size from their last resolves.

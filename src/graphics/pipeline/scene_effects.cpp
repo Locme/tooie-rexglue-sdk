@@ -206,6 +206,10 @@ REXCVAR_DEFINE_INT32(scene_fx_debug, 0, "GPU/Effects",
     .range(0, 7) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_trace, false, "GPU/Effects",
                     "Log the effects' decisions for one frame, then reset") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_INT32(scene_fx_trace_every, 0, "GPU/Effects",
+                     "Log the effects' decisions (as scene_fx_trace) every this many frames, "
+                     "for runs without a way to flip scene_fx_trace at the right moment")
+    .range(0, 1000000) REX_SCENE_FX_LIVE;
 
 namespace rex::graphics {
 
@@ -408,17 +412,27 @@ void SceneEffects::OnDraw() {
   }
   // Only depth-writing draws define the depth being resolved.
   auto depth_control = register_file_.Get<reg::RB_DEPTHCONTROL>();
+  {
+    uint64_t frame = GetCurrentFrame();
+    if (frame >= trace_frame_ && frame < trace_frame_end_) {
+      auto blend = register_file_.Get<reg::RB_BLENDCONTROL>();
+      auto draw_initiator = register_file_.Get<reg::VGT_DRAW_INITIATOR>();
+      Rect rect = {};
+      bool has_rect = GetSdrDrawRect(rect);
+      REXGPU_INFO(
+          "Scene effects trace: draw z {} zw {} zfunc {} blend {}/{}/{} {} x{} at {},{}-{},{}{} "
+          "scene {}",
+          uint32_t(depth_control.z_enable), uint32_t(depth_control.z_write_enable),
+          uint32_t(depth_control.zfunc), uint32_t(blend.color_srcblend),
+          uint32_t(blend.color_destblend), uint32_t(blend.color_comb_fcn),
+          draw_initiator.source_select == xenos::SourceSelect::kAutoIndex ? "auto" : "indexed",
+          uint32_t(draw_initiator.num_indices), rect.left, rect.top, rect.right, rect.bottom,
+          has_rect ? "" : " (outside)", sdr_scene_drawn_ ? 1 : 0);
+    }
+  }
   if (!depth_control.z_enable) {
     CompositeSdrSceneBeforeOverlay();
     return;
-  }
-  if (sdr_scene_drawn_) {
-    auto blend = register_file_.Get<reg::RB_BLENDCONTROL>();
-    if (blend.color_srcblend != xenos::BlendFactor::kOne ||
-        blend.color_destblend != xenos::BlendFactor::kZero ||
-        blend.color_comb_fcn != xenos::BlendOp::kAdd) {
-      CaptureSdrSceneDepthBeforeBlending();
-    }
   }
   if (!depth_control.z_write_enable) {
     return;
@@ -496,7 +510,9 @@ void SceneEffects::OnResolve() {
 
   uint64_t frame = GetCurrentFrame();
   // scene_fx_trace logs the decisions over the next 3 whole frames.
-  if (REXCVAR_GET(scene_fx_trace) && trace_frame_ == UINT64_MAX) {
+  int32_t trace_every = REXCVAR_GET(scene_fx_trace_every);
+  if ((REXCVAR_GET(scene_fx_trace) || (trace_every > 0 && frame % uint64_t(trace_every) == 0)) &&
+      trace_frame_ == UINT64_MAX) {
     trace_frame_ = frame + 1;
     trace_frame_end_ = frame + 4;
   } else if (trace_frame_ != UINT64_MAX && frame >= trace_frame_end_) {
@@ -668,7 +684,6 @@ int32_t SceneEffects::GetSdrTile(int32_t screen_offset_x, int32_t screen_offset_
   tile.offset[1] = screen_offset_y;
   tile.composited = false;
   tile.resolved = false;
-  tile.depth_captured = false;
   return int32_t(sdr_tile_count_++);
 }
 
@@ -706,38 +721,6 @@ bool SceneEffects::GetSdrDrawRect(Rect& rect_out) const {
   rect_out.bottom = (int32_t(scissor_br.br_y) + offset_y) * int32_t(scale_y);
   return rect_out.right > rect_out.left && rect_out.bottom > rect_out.top &&
          uint32_t(rect_out.right) <= sdr_width_ && uint32_t(rect_out.bottom) <= sdr_height_;
-}
-
-void SceneEffects::CaptureSdrSceneDepthBeforeBlending() {
-  // The first blended draw after a tile's opaque 3D: see-through sprites
-  // (glows, smoke) still write depth, which the effects would take for solid
-  // surfaces (an unoccluded disk around Bottles' glow). Their tile's depth is
-  // copied now; at the composite only what's still sky is taken (what's
-  // drawn over the sky later).
-  int32_t screen_offset_x, screen_offset_y;
-  const SdrTileLayout* layout = GetSdrTileLayout(screen_offset_x, screen_offset_y);
-  if (!layout) {
-    return;
-  }
-  RenderTarget* const* render_targets =
-      render_target_cache_.last_update_accumulated_render_targets();
-  RenderTarget* color_rt = render_targets[1];
-  if (!render_targets[0] || !color_rt || IsHdrColorFormat(color_rt->key().GetColorFormat())) {
-    return;
-  }
-  int32_t tile = GetSdrTile(screen_offset_x, screen_offset_y);
-  Rect rect;
-  if (tile < 0 || sdr_tiles_[tile].depth_captured || sdr_tiles_[tile].composited ||
-      !GetSdrDrawRect(rect)) {
-    return;
-  }
-  Rect screen_rect = {rect.left + screen_offset_x, rect.top + screen_offset_y,
-                      rect.right + screen_offset_x, rect.bottom + screen_offset_y};
-  uint64_t frame = GetCurrentFrame();
-  bool trace = frame >= trace_frame_ && frame < trace_frame_end_;
-  CaptureSceneDepth(*render_targets[0], GetDominantDrawState(false), sdr_width_, sdr_height_,
-                    screen_offset_x, screen_offset_y, trace, &screen_rect);
-  sdr_tiles_[tile].depth_captured = depth_frame_ == frame;
 }
 
 void SceneEffects::CompositeSdrSceneBeforeOverlay() {
@@ -838,15 +821,12 @@ void SceneEffects::CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* d
     REXGPU_INFO("Scene effects trace: SDR scene tile at {},{}-{},{} (screen)", screen_rect.left,
                 screen_rect.top, screen_rect.right, screen_rect.bottom);
   }
-  // The depth from before the tile's see-through draws, when it was taken
-  // (CaptureSdrSceneDepthBeforeBlending): what they drew over the sky since
-  // stays sky. (A copy mode adding only the pixels still sky read the depth
-  // texture it writes, and that broke the depth on Vulkan.)
-  int32_t tile = GetSdrTile(screen_offset_x, screen_offset_y);
-  if (tile < 0 || !sdr_tiles_[tile].depth_captured) {
-    CaptureSceneDepth(*depth_rt, GetDominantDrawState(false), width, height, screen_offset_x,
-                      screen_offset_y, trace, &screen_rect);
-  }
+  // The tile's depth as drawn, see-through sprites included: this game
+  // blends every draw alike (SrcAlpha/InvSrcAlpha, opaque geometry too), so
+  // a copy taken before "the blended draws" was one taken after the first
+  // few meshes, and most of the scene counted as sky.
+  CaptureSceneDepth(*depth_rt, GetDominantDrawState(false), width, height, screen_offset_x,
+                    screen_offset_y, trace, &screen_rect);
   if (depth_frame_ != frame) {
     return;
   }
