@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -115,6 +116,11 @@ class CommandProcessor {
   virtual void InitializeShaderStorage(const std::filesystem::path& cache_root, uint32_t title_id,
                                        bool blocking);
 
+  // Tears the host GPU context down and sets it up again at the next swap (on
+  // the command processor thread), so settings read only at setup, such as the
+  // draw resolution scale, apply without restarting. Callable from any thread.
+  void RequestContextRebuild() { context_rebuild_requested_.store(true); }
+
   void InitializeRingBuffer(uint32_t ptr, uint32_t size_log2);
   void EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2);
 
@@ -173,6 +179,7 @@ class CommandProcessor {
   };
 
   void WorkerThreadMain();
+  void RebuildContextIfRequested();
   virtual bool SetupContext() = 0;
   virtual void ShutdownContext() = 0;
 
@@ -301,6 +308,19 @@ class CommandProcessor {
   Shader* active_pixel_shader_ = nullptr;
 
   bool paused_ = false;
+
+  std::atomic<bool> context_rebuild_requested_{false};
+  // Set by the swap that saw the request; the next swap rebuilds.
+  bool context_rebuild_armed_ = false;
+  // Draw resolution scale (as configured, before device clamping) the context
+  // was last set up with.
+  uint32_t context_draw_resolution_scale_x_ = 0;
+  uint32_t context_draw_resolution_scale_y_ = 0;
+  // Last InitializeShaderStorage arguments, repeated after a context rebuild.
+  bool shader_storage_initialized_ = false;
+  std::filesystem::path shader_storage_cache_root_;
+  uint32_t shader_storage_title_id_ = 0;
+  bool shader_storage_blocking_ = false;
 
   // By default (such as for tools), post-processing is disabled.
   // "Desired" is for the external thread managing the post-processing effect.

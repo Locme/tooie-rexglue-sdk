@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <mutex>
 #include <utility>
 
 #include <rex/assert.h>
@@ -43,43 +44,36 @@ REXCVAR_DEFINE_INT32(present_safe_area_y, 90, "UI/Presenter",
 #if defined(REX_HAS_FIDELITYFX_SDK)
 REXCVAR_DEFINE_STRING(present_effect, "bilinear", "UI/Presenter",
                       "Guest output effect: bilinear, cas, fsr, fsr2, fsr3")
-    .allowed({"bilinear", "cas", "fsr", "fsr2", "fsr3"})
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .allowed({"bilinear", "cas", "fsr", "fsr2", "fsr3"});
 
 REXCVAR_DEFINE_DOUBLE(present_cas_additional_sharpness,
                       rex::ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessDefault,
                       "UI/Presenter", "Additional CAS sharpness in [0, 1]")
     .range(rex::ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessMin,
-           rex::ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessMax)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+           rex::ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessMax);
 
 REXCVAR_DEFINE_INT32(present_fsr_max_upsampling_passes,
                      rex::ui::Presenter::GuestOutputPaintConfig::kFsrMaxUpscalingPassesMax,
                      "UI/Presenter", "Maximum chained FSR EASU passes")
-    .range(1, int32_t(rex::ui::Presenter::GuestOutputPaintConfig::kFsrMaxUpscalingPassesMax))
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .range(1, int32_t(rex::ui::Presenter::GuestOutputPaintConfig::kFsrMaxUpscalingPassesMax));
 
 REXCVAR_DEFINE_DOUBLE(present_fsr_sharpness_reduction,
                       rex::ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionDefault,
                       "UI/Presenter", "FSR RCAS sharpness reduction in stops")
     .range(rex::ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMin,
-           rex::ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMax)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+           rex::ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMax);
 
 REXCVAR_DEFINE_STRING(
     present_fsr_quality_mode, "auto", "UI/Presenter",
     "Temporal FSR quality mode: auto, nativeaa, quality, balanced, performance, ultra_performance")
-    .allowed({"auto", "nativeaa", "quality", "balanced", "performance", "ultra_performance"})
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .allowed({"auto", "nativeaa", "quality", "balanced", "performance", "ultra_performance"});
 #else
 REXCVAR_DEFINE_STRING(present_effect, "bilinear", "UI/Presenter", "Guest output effect: bilinear")
-    .allowed({"bilinear"})
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .allowed({"bilinear"});
 #endif
 
 REXCVAR_DEFINE_BOOL(present_dither, false, "UI/Presenter",
-                    "Enable output dithering in the final present pass")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+                    "Enable output dithering in the final present pass");
 
 REXCVAR_DEFINE_BOOL(present_allow_overscan_cutoff, false, "UI/Presenter",
                     "Allow overscan cutoff based on safe area settings")
@@ -270,6 +264,25 @@ GuestOutputPaintConfig BuildGuestOutputPaintConfigFromCVar() {
 #endif
   config.SetDither(REXCVAR_GET(present_dither));
   return config;
+}
+
+// Set when a cvar that feeds the paint config changes (settings menu, console,
+// config reload); the next ConsumeGuestOutput rebuilds the config, so the
+// upscaling effect switches without a restart.
+std::atomic<bool> guest_output_paint_config_dirty{false};
+
+void RegisterGuestOutputPaintConfigCallbacks() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    for (const char* name :
+         {"present_effect", "present_cas_additional_sharpness", "present_fsr_max_upsampling_passes",
+          "present_fsr_sharpness_reduction", "present_fsr_quality_mode", "present_dither",
+          "present_allow_overscan_cutoff"}) {
+      rex::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view) {
+        guest_output_paint_config_dirty.store(true, std::memory_order_release);
+      });
+    }
+  });
 }
 
 }  // namespace
@@ -790,6 +803,7 @@ bool Presenter::InitializeCommonSurfaceIndependent() {
     std::lock_guard<std::mutex> config_lock(guest_output_paint_config_mutex_);
     guest_output_paint_config_ = BuildGuestOutputPaintConfigFromCVar();
   }
+  RegisterGuestOutputPaintConfigCallbacks();
 
   // Initialize UI frame rate limiting.
 #if REX_PLATFORM_WIN32
@@ -806,6 +820,10 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
     // Get the up-to-date guest output paint configuration settings set by the
     // UI thread.
     std::unique_lock<std::mutex> config_lock(guest_output_paint_config_mutex_);
+    if (guest_output_paint_config_dirty.exchange(false, std::memory_order_acq_rel)) {
+      guest_output_paint_config_ = BuildGuestOutputPaintConfigFromCVar();
+      REXLOG_INFO("Presenter: guest output effect now {}", REXCVAR_GET(present_effect));
+    }
     *paint_config_out = guest_output_paint_config_;
   }
 

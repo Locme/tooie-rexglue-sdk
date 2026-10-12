@@ -160,6 +160,17 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
         rex::cvar::SetFlagByName("scene_fx_smaa", IsSmaa(new_value) ? "true" : "false");
       });
 
+  // Supersampling: render targets, textures and translated shaders depend on
+  // the scale, so the command processor sets its context up again at the next
+  // swap rather than needing a restart.
+  for (const char* name : {"draw_resolution_scale_x", "draw_resolution_scale_y", "resolution_scale"}) {
+    rex::cvar::RegisterChangeCallback(name, [this](std::string_view, std::string_view) {
+      if (command_processor_) {
+        command_processor_->RequestContextRebuild();
+      }
+    });
+  }
+
   // Register GPU MMIO handlers
   // GPU registers are at 0x7FC80000-0x7FCFFFFF
   memory_->AddVirtualMappedRange(0x7FC80000,  // base address
@@ -203,6 +214,9 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
 
 void GraphicsSystem::Shutdown() {
   rex::cvar::UnregisterChangeCallbacks("swap_post_effect");
+  rex::cvar::UnregisterChangeCallbacks("draw_resolution_scale_x");
+  rex::cvar::UnregisterChangeCallbacks("draw_resolution_scale_y");
+  rex::cvar::UnregisterChangeCallbacks("resolution_scale");
   if (command_processor_) {
     command_processor_->Shutdown();
     command_processor_.reset();
