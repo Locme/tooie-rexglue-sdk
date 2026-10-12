@@ -41,6 +41,10 @@ namespace shaders {
 #include "../shaders/bytecode/d3d12_5_1/scene_fx_shadow_copy_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/scene_fx_sky_color_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/scene_fx_sky_color_msaa_cs.h"
+#include "../shaders/bytecode/d3d12_5_1/scene_fx_smaa_blend_cs.h"
+#include "../shaders/bytecode/d3d12_5_1/scene_fx_smaa_edges_cs.h"
+#include "../shaders/bytecode/d3d12_5_1/scene_fx_smaa_tables_cs.h"
+#include "../shaders/bytecode/d3d12_5_1/scene_fx_smaa_weights_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/scene_fx_temporal_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/scene_fx_volumetric_cs.h"
 }  // namespace shaders
@@ -78,6 +82,10 @@ const ShaderCode kComputeShaders[] = {
     REX_SCENE_FX_SHADER(scene_fx_reflections_cs),
     REX_SCENE_FX_SHADER(scene_fx_volumetric_cs),
     REX_SCENE_FX_SHADER(scene_fx_temporal_cs),
+    REX_SCENE_FX_SHADER(scene_fx_smaa_tables_cs),
+    REX_SCENE_FX_SHADER(scene_fx_smaa_edges_cs),
+    REX_SCENE_FX_SHADER(scene_fx_smaa_weights_cs),
+    REX_SCENE_FX_SHADER(scene_fx_smaa_blend_cs),
 };
 #undef REX_SCENE_FX_SHADER
 

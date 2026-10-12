@@ -45,6 +45,9 @@
 #define FX_COMPOSITE_MULTIPLY 0u  // dest * (occlusion + indirect) * fog transmittance
 #define FX_COMPOSITE_ADD 1u       // dest + scattered light (fog, light shafts)
 #define FX_COMPOSITE_DEBUG 2u     // replaces dest
+// Replaces dest with the 16-bit copy of the scene * the multiply + the add,
+// dithered to 8 bits (one rounding instead of one per blend).
+#define FX_COMPOSITE_RESOLVE 3u
 
 // 32 dwords (128 bytes): D3D12 root constants / Vulkan push constants.
 FX_CONSTANTS_BLOCK {
@@ -108,6 +111,15 @@ float3 FxViewPosition(float2 screen, float distance) {
 // Jorge Jimenez's interleaved gradient noise.
 float FxNoise(float2 pixel) {
   return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
+}
+
+// Triangular dither of one 8-bit step, added before an 8-bit target rounds:
+// gradients (fog, occlusion, grading) without banding.
+float3 FxDither8(float2 pixel) {
+  float a = FxNoise(pixel);
+  float b = FxNoise(pixel + float2(113.0, 47.0));
+  float c = FxNoise(pixel + float2(61.0, 197.0));
+  return (float3(a + b, b + c, c + a) - 1.0) / 255.0;
 }
 
 // Lagarde's acos approximation, as used by XeGTAO.

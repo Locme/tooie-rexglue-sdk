@@ -158,8 +158,8 @@ const char* const kResolutionScales[] = {"1x (native)", "2x", "3x"};
 const int kResolutionScaleValues[] = {1, 2, 3};
 const char* const kAnisotropy[] = {"Game's own", "Off", "2x", "4x", "8x", "16x"};
 const int kAnisotropyValues[] = {-1, 0, 2, 3, 4, 5};
-const char* const kAntiAliasingValues[] = {"none", "fxaa", "fxaa_extreme"};
-const char* const kAntiAliasingLabels[] = {"Off", "FXAA", "FXAA (extreme)"};
+const char* const kAntiAliasingValues[] = {"none", "fxaa", "fxaa_extreme", "smaa"};
+const char* const kAntiAliasingLabels[] = {"Off", "FXAA", "FXAA (extreme)", "SMAA"};
 
 }  // namespace
 
@@ -340,6 +340,22 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     SliderCvar("Shadow lift", "scene_fx_grading_shadow_lift", 0.0f, 0.5f);
     SliderCvar("Vignette", "scene_fx_vignette", 0.0f, 1.0f);
     SliderCvar("Film grain", "scene_fx_film_grain", 0.0f, 1.0f);
+    ImGui::PopID();
+  }
+
+  if (EffectHeader("16-bit Effects", "scene_fx_16bit")) {
+    ImGui::PushID("16bit");
+    Description(
+        "The effects are applied to a 16-bit copy of the 8-bit scene and dithered back, so "
+        "fog and shadow gradients stay smooth instead of banding.");
+    ImGui::PopID();
+  }
+
+  if (EffectHeader("Retro: N64 16-bit Color", "scene_fx_retro_16bit_color")) {
+    ImGui::PushID("retro_color");
+    Description(
+        "The N64's 16-bit framebuffer: 5 bits per channel with its ordered dither pattern, "
+        "on the final image.");
     ImGui::PopID();
   }
 

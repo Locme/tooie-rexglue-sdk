@@ -2,7 +2,7 @@
 // tonemapping): contrast-adaptive sharpening - after AMD FidelityFX CAS: a
 // cross-shaped sharpening kernel whose strength adapts to the local contrast,
 // so edges get crisper without halos or noise amplification - then color
-// grading.
+// grading, then the retro N64 16-bit color.
 
 #include "scene_fx_common.hlsli"
 
@@ -15,8 +15,10 @@ FX_EXTRA_CONSTANTS_BLOCK(1) {
   float4 fx_image_grade;
   // rgb = white balance (temperature and tint), w = gamma.
   float4 fx_image_white;
-  // x = shadow lift, y = vignette, z = film grain.
+  // x = shadow lift, y = vignette, z = film grain, w = 1 to dither to 8 bits.
   float4 fx_image_finish;
+  // x = 1 for the N64's 16-bit color (5 bits per channel, magic square dither).
+  float4 fx_image_retro;
 };
 
 float3 FxLoadImage(int2 pixel) {
@@ -73,5 +75,19 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float grain = FxNoise(position.xy + float2(17.0, 59.0) * float(fx_frame & 255)) - 0.5;
   float midtones = 4.0 * FxLuminance(color) * (1.0 - FxLuminance(color));
   color += grain * fx_image_finish.z * 0.15 * midtones;
+  if (fx_image_retro.x > 0.0) {
+    // The RDP's 16-bit framebuffer: 8-bit color + the magic square's 0...7
+    // (an eighth of a 5-bit step each), truncated to 5 bits, read back by the
+    // VI as 5 bits repeated into 8.
+    const uint kMagicSquare[16] = {0u, 6u, 1u, 7u, 4u, 2u, 5u, 3u,
+                                   3u, 5u, 2u, 4u, 7u, 1u, 6u, 0u};
+    uint2 cell = uint2(position.xy) & 3u;
+    float dither = float(kMagicSquare[cell.y * 4u + cell.x]);
+    float3 bits5 = min(floor((floor(saturate(color) * 255.0 + 0.5) + dither) / 8.0), 31.0);
+    return float4((bits5 * 8.0 + floor(bits5 / 4.0)) / 255.0, 1.0);
+  }
+  if (fx_image_finish.w > 0.0) {
+    color += FxDither8(position.xy);
+  }
   return float4(saturate(color), 1.0);
 }

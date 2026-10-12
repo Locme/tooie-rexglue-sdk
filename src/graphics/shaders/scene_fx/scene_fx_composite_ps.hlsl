@@ -7,6 +7,8 @@
 // - Add: color += light the fog scatters toward the camera + volumetric
 //   lighting (light shafts).
 // - Debug: replaces the color with one effect.
+// - Resolve: both at once on a 16-bit copy of the scene, dithered back to the
+//   8-bit target (scene_fx_16bit).
 // The fog is exponential height fog integrated analytically per pixel at full
 // resolution (no ray marching), lit by the sky and with a glow toward the sun.
 
@@ -26,7 +28,9 @@ FX_BINDING(6) Texture2D<float4> fx_sky : register(t6);  // 1x1
 // At fx_effect_scale.
 FX_BINDING(7) Texture2D<float> fx_contact_shadows : register(t7);
 FX_BINDING(8) Texture2D<float4> fx_reflections : register(t8);
-FX_EXTRA_CONSTANTS_BLOCK(9) {
+// Resolve: the render target's copy, at its pixels.
+FX_BINDING(9) Texture2D<float4> fx_scene_image : register(t9);
+FX_EXTRA_CONSTANTS_BLOCK(10) {
   // xyz = view space direction to world height, w = the camera's height.
   float4 fx_fog_height;
   // Density: x = at height y (world), z = falloff with height, w = everywhere.
@@ -78,10 +82,12 @@ float FxFogOpticalDepth(float3 direction, float distance) {
 
 float4 main(float4 position : SV_Position) : SV_Target {
   float2 screen = position.xy * fx_output_scale + float2(fx_screen_offset);
+  bool resolve = fx_composite_mode == FX_COMPOSITE_RESOLVE;
+  float3 scene = resolve ? fx_scene_image.Load(int3(int2(position.xy), 0)).rgb : 0.0;
   // Unchanged for either blend.
   float4 identity = fx_composite_mode == FX_COMPOSITE_ADD ? 0.0 : 1.0;
   if (fx_debug_mode == FX_DEBUG_SPLIT && screen.x >= 0.5 * float(fx_scene_size.x)) {
-    return identity;
+    return resolve ? float4(scene, 1.0) : identity;
   }
   int2 pixel = clamp(int2(screen), int2(0, 0), int2(fx_scene_size) - 1);
   float depth = fx_depth.Load(int3(pixel, 0));
@@ -155,8 +161,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
     FX_UPSAMPLE(fx_reflections, reflection)
     reflections = reflection.rgb * (fx_effect_strengths.y * fog_transmittance);
   }
+  float3 added = fog_light + shafts + reflections;
   if (fx_composite_mode == FX_COMPOSITE_ADD) {
-    return float4(fog_light + shafts + reflections, 0.0);
+    return float4(added, 0.0);
   }
 
   float contact = 1.0;
@@ -215,5 +222,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (fx_debug_mode == FX_DEBUG_REFLECTIONS) {
     return float4(reflections / (1.0 + reflections), 1.0);
   }
-  return float4((ao * contact + indirect) * fog_transmittance, 1.0);
+  float3 multiplier = (ao * contact + indirect) * fog_transmittance;
+  if (resolve) {
+    return float4(saturate(scene * multiplier + added + FxDither8(position.xy)), 1.0);
+  }
+  return float4(multiplier, 1.0);
 }

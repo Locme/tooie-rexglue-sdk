@@ -87,6 +87,13 @@ class SceneEffects {
     kShadow1,
     // A copy of the final image for the image effects.
     kFinalImage,
+    // SMAA: lookup tables (written once), edges, blending weights, and the
+    // antialiased image the image effects then read.
+    kSmaaArea,
+    kSmaaSearch,
+    kSmaaEdges,
+    kSmaaWeights,
+    kSmaaImage,
 
     kCount,
   };
@@ -126,6 +133,10 @@ class SceneEffects {
     kReflections,
     kVolumetric,
     kTemporal,
+    kSmaaTables,
+    kSmaaEdges,
+    kSmaaWeights,
+    kSmaaBlend,
 
     kCount,
   };
@@ -147,6 +158,9 @@ class SceneEffects {
     kCompositeAdd,
     // Replaces dest (debug views).
     kCompositeDebug,
+    // Replaces dest with the effects applied to its 16-bit copy (kFinalImage),
+    // dithered.
+    kCompositeResolve,
     // Replaces dest (sharpening, color grading).
     kImage,
 
@@ -337,6 +351,14 @@ class SceneEffects {
                  bool trace);
   void ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, uint32_t width,
                          uint32_t height, bool trace);
+  // SMAA of kFinalImage's rect into kSmaaImage; false if it could not run.
+  // The multiply and add composites, or with scene_fx_16bit on an 8-bit
+  // (sdr) scene, the resolve.
+  void CompositeEffects(RenderTarget& color_rt, const Rect& rect, int32_t screen_offset_x,
+                        int32_t screen_offset_y, bool sdr, bool trace);
+  bool EnsureImageTexture(Texture texture, uint32_t width, uint32_t height);
+  bool ApplySmaa(const void* constants, const Rect& rect, uint32_t width,
+                 uint32_t height);
 
   RenderTargetCache& render_target_cache_;
   const RegisterFile& register_file_;
@@ -359,6 +381,11 @@ class SceneEffects {
   uint64_t image_frame_ = UINT64_MAX;
 
   // What was computed for the current frame, and at which resolution.
+  bool smaa_tables_written_ = false;
+  // Size of the final image's textures (kFinalImage, the SMAA ones), the
+  // largest asked for.
+  uint32_t image_width_ = 0;
+  uint32_t image_height_ = 0;
   bool ao_computed_ = false;
   bool gi_computed_ = false;
   bool contact_shadows_computed_ = false;

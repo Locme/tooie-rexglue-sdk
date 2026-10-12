@@ -31,8 +31,10 @@
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
-REXCVAR_DEFINE_STRING(swap_post_effect, "none", "GPU", "Swap post effect: none, fxaa, fxaa_extreme")
-    .allowed({"none", "fxaa", "fxaa_extreme"})
+REXCVAR_DEFINE_STRING(swap_post_effect, "none", "GPU",
+                      "Swap post effect: none, fxaa, fxaa_extreme, smaa (SMAA 1x on the scene, "
+                      "same as scene_fx_smaa)")
+    .allowed({"none", "fxaa", "fxaa_extreme", "smaa"})
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(store_shaders, true, "GPU",
@@ -55,6 +57,15 @@ rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
     return rex::graphics::CommandProcessor::SwapPostEffect::kFxaaExtreme;
   }
   return rex::graphics::CommandProcessor::SwapPostEffect::kNone;
+}
+
+// "smaa" is not a swap effect: it switches the scene effects' SMAA pass
+// (scene_fx_smaa), so one anti-aliasing setting picks FXAA or SMAA.
+bool IsSmaa(std::string_view effect_name) {
+  return effect_name.size() == 4 && std::tolower(static_cast<unsigned char>(effect_name[0])) == 's' &&
+         std::tolower(static_cast<unsigned char>(effect_name[1])) == 'm' &&
+         std::tolower(static_cast<unsigned char>(effect_name[2])) == 'a' &&
+         std::tolower(static_cast<unsigned char>(effect_name[3])) == 'a';
 }
 }  // namespace
 
@@ -136,6 +147,9 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
     return X_STATUS_UNSUCCESSFUL;
   }
   command_processor_->SetDesiredSwapPostEffect(ParseSwapPostEffect(REXCVAR_GET(swap_post_effect)));
+  if (IsSmaa(REXCVAR_GET(swap_post_effect))) {
+    rex::cvar::SetFlagByName("scene_fx_smaa", "true");
+  }
   // Changed from a settings menu or the console: applied to the next frames,
   // not read again only at the next start.
   rex::cvar::RegisterChangeCallback(
@@ -143,6 +157,7 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
         if (command_processor_) {
           command_processor_->SetDesiredSwapPostEffect(ParseSwapPostEffect(std::string(new_value)));
         }
+        rex::cvar::SetFlagByName("scene_fx_smaa", IsSmaa(new_value) ? "true" : "false");
       });
 
   // Register GPU MMIO handlers

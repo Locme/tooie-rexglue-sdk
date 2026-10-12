@@ -9,6 +9,8 @@
 
 #include <rex/graphics/pipeline/scene_effects.h>
 
+#include "smaa_tables.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -152,6 +154,15 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_fog_distance, 1000.0, "GPU/Effects",
     .range(50.0, 20000.0) REX_SCENE_FX_LIVE;
 
 // Image.
+REXCVAR_DEFINE_BOOL(scene_fx_smaa, false, "GPU/Effects",
+                    "SMAA antialiasing of the 3D scene (before the HUD; with or instead of "
+                    "the FXAA swap effect)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_16bit, false, "GPU/Effects",
+                    "Composite the effects onto an 8-bit scene through a 16-bit copy and "
+                    "dither back (no banding in fog and shadow gradients)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_retro_16bit_color, false, "GPU/Effects",
+                    "Retro: the N64's 16-bit color (5 bits per channel with its ordered "
+                    "dither pattern) on the final image") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_sharpen, false, "GPU/Effects",
                     "Contrast-adaptive sharpening of the final image") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_sharpen_amount, 0.5, "GPU/Effects", "Sharpening strength")
@@ -293,6 +304,7 @@ struct ImageConstants {
   float grade[4];
   float white[4];
   float finish[4];
+  float retro[4];
 };
 
 // fx_effect_flags, scene_fx_debug and fx_composite_mode, as in
@@ -307,6 +319,7 @@ constexpr int32_t kDebugSplit = 1;
 constexpr uint32_t kCompositeMultiply = 0;
 constexpr uint32_t kCompositeAdd = 1;
 constexpr uint32_t kCompositeDebug = 2;
+constexpr uint32_t kCompositeResolve = 3;
 
 // Slices x steps per side - without temporal accumulation.
 struct AoQuality {
@@ -369,6 +382,11 @@ const SceneEffects::TextureInfo
         {TextureFormat::kR32Float, 1, false},                   // kShadow0
         {TextureFormat::kR32Float, 1, false},                   // kShadow1
         {TextureFormat::kRGBA16Float, 1, false},                // kFinalImage
+        {TextureFormat::kRGBA16Float, 1, true},                 // kSmaaArea
+        {TextureFormat::kRGBA16Float, 1, true},                 // kSmaaSearch
+        {TextureFormat::kRGBA16Float, 1, false},                // kSmaaEdges
+        {TextureFormat::kRGBA16Float, 1, false},                // kSmaaWeights
+        {TextureFormat::kRGBA16Float, 1, false},                // kSmaaImage
 };
 
 const SceneEffects::PipelineInfo
@@ -391,6 +409,10 @@ const SceneEffects::PipelineInfo
         {3, true, true, 1},    // kReflections
         {4, true, true, 1},    // kVolumetric
         {3, true, true, 1},    // kTemporal
+        {0, false, true, 2},   // kSmaaTables
+        {1, false, false, 1},  // kSmaaEdges
+        {3, true, false, 1},   // kSmaaWeights
+        {2, true, false, 1},   // kSmaaBlend
 };
 
 SceneEffects::SceneEffects(RenderTargetCache& render_target_cache,
@@ -431,7 +453,8 @@ bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
 }
 
 bool SceneEffects::AnyImageEffectEnabled() {
-  return REXCVAR_GET(scene_fx_sharpen) || REXCVAR_GET(scene_fx_grading);
+  return REXCVAR_GET(scene_fx_sharpen) || REXCVAR_GET(scene_fx_grading) ||
+         REXCVAR_GET(scene_fx_smaa) || REXCVAR_GET(scene_fx_retro_16bit_color);
 }
 
 bool SceneEffects::SunShadowsNeeded() {
@@ -682,14 +705,8 @@ void SceneEffects::OnResolve() {
       // Shown over the final image instead.
       return;
     }
-    if (ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_) {
-      Composite(*source_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
-                Draw::kCompositeMultiply, trace);
-    }
-    if (fog_enabled_ || volumetrics_computed_ || reflections_computed_) {
-      Composite(*source_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
-                Draw::kCompositeAdd, trace);
-    }
+    // A float scene: the blends already keep the precision.
+    CompositeEffects(*source_rt, rect, screen_offset_x, screen_offset_y, false, trace);
     return;
   }
 
@@ -883,14 +900,7 @@ void SceneEffects::CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* d
               Draw::kCompositeDebug, trace);
     return;
   }
-  if (ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_) {
-    Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
-              Draw::kCompositeMultiply, trace);
-  }
-  if (fog_enabled_ || volumetrics_computed_ || reflections_computed_) {
-    Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
-              Draw::kCompositeAdd, trace);
-  }
+  CompositeEffects(color_rt, rect, screen_offset_x, screen_offset_y, true, trace);
 }
 
 void SceneEffects::ReadCameraConstants(float rows[4][4]) const {
@@ -1169,6 +1179,11 @@ bool SceneEffects::EnsureSceneTextures(uint32_t width, uint32_t height) {
       case Texture::kShadow0:
       case Texture::kShadow1:
       case Texture::kFinalImage:
+      case Texture::kSmaaArea:
+      case Texture::kSmaaSearch:
+      case Texture::kSmaaEdges:
+      case Texture::kSmaaWeights:
+      case Texture::kSmaaImage:
         // Their own sizes.
         continue;
       default:
@@ -1664,7 +1679,8 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
                              int32_t screen_offset_y, float output_scale_x, float output_scale_y,
                              Draw draw, bool trace) {
   if (trace) {
-    static const char* const kDrawNames[] = {"multiply", "add", "debug view", "image"};
+    static const char* const kDrawNames[] = {"multiply", "add", "debug view", "16-bit resolve",
+                                             "image"};
     REXGPU_INFO("Scene effects trace: composite ({}) into {}-{},{}-{}",
                 kDrawNames[uint32_t(draw)], rect.left, rect.right, rect.top, rect.bottom);
   }
@@ -1677,28 +1693,74 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
                            (fog_enabled_ ? kEffectFog : 0) |
                            (contact_shadows_computed_ ? kEffectContactShadows : 0) |
                            (reflections_computed_ ? kEffectReflections : 0);
-  constants.composite_mode = draw == Draw::kCompositeAdd   ? kCompositeAdd
-                             : draw == Draw::kCompositeDebug ? kCompositeDebug
-                                                             : kCompositeMultiply;
+  constants.composite_mode = draw == Draw::kCompositeAdd       ? kCompositeAdd
+                             : draw == Draw::kCompositeDebug   ? kCompositeDebug
+                             : draw == Draw::kCompositeResolve ? kCompositeResolve
+                                                               : kCompositeMultiply;
+  // The resolve's copy of the render target (unused by the other draws, but
+  // bound).
+  if (!EnsureImageTexture(Texture::kFinalImage, uint32_t(rect.right), uint32_t(rect.bottom))) {
+    return;
+  }
   Texture scene_color = scene_color_index_ ? Texture::kSceneColor1 : Texture::kSceneColor0;
   Texture sky = sky_index_ ? Texture::kSky1 : Texture::kSky0;
   // In the order of the composite shader's t0...
   DrawFullscreen(draw, color_rt, rect,
                  {Source(Texture::kAo0), Source(Texture::kViewDepth), Source(DepthTexture()),
                   Source(volumetric_result_), Source(Texture::kGi0), Source(scene_color),
-                  Source(sky), Source(Texture::kContactShadows0), Source(Texture::kReflections0)},
+                  Source(sky), Source(Texture::kContactShadows0), Source(Texture::kReflections0),
+                  Source(Texture::kFinalImage)},
                  &constants, composite_constants_, sizeof(composite_constants_));
+}
+
+void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& rect,
+                                    int32_t screen_offset_x, int32_t screen_offset_y,
+                                    bool sdr, bool trace) {
+  bool multiply = ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_;
+  bool add = fog_enabled_ || volumetrics_computed_ || reflections_computed_;
+  if (!multiply && !add) {
+    return;
+  }
+  if (sdr && REXCVAR_GET(scene_fx_16bit) &&
+      EnsureImageTexture(Texture::kFinalImage, uint32_t(rect.right), uint32_t(rect.bottom))) {
+    // The tile copied at 16 bits, the effects applied to it in one pass and
+    // dithered back: one 8-bit rounding instead of one per blend.
+    FxConstants constants;
+    FillConstants(&constants, 0, 0);
+    constants.pass_rect[0] = uint32_t(rect.left);
+    constants.pass_rect[1] = uint32_t(rect.top);
+    constants.pass_rect[2] = uint32_t(rect.right);
+    constants.pass_rect[3] = uint32_t(rect.bottom);
+    bool msaa = color_rt.key().msaa_samples != xenos::MsaaSamples::k1X;
+    if (Dispatch(msaa ? Pipeline::kColorCopyMsaa : Pipeline::kColorCopy, {Source(&color_rt)},
+                 {Target(Texture::kFinalImage)}, &constants, nullptr, 0,
+                 uint32_t(rect.right - rect.left), uint32_t(rect.bottom - rect.top))) {
+      Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
+                Draw::kCompositeResolve, trace);
+      return;
+    }
+  }
+  if (multiply) {
+    Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
+              Draw::kCompositeMultiply, trace);
+  }
+  if (add) {
+    Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f, Draw::kCompositeAdd,
+              trace);
+  }
 }
 
 void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, uint32_t width,
                                      uint32_t height, bool trace) {
   bool sharpen = REXCVAR_GET(scene_fx_sharpen);
   bool grading = REXCVAR_GET(scene_fx_grading);
-  if (!sharpen && !grading) {
+  bool smaa = REXCVAR_GET(scene_fx_smaa);
+  bool retro_color = REXCVAR_GET(scene_fx_retro_16bit_color);
+  if (!sharpen && !grading && !smaa && !retro_color) {
     return;
   }
   // The image, copied to read its neighborhoods.
-  if (!EnsureTexture(Texture::kFinalImage, width, height)) {
+  if (!EnsureImageTexture(Texture::kFinalImage, width, height)) {
     return;
   }
   FxConstants constants;
@@ -1712,6 +1774,10 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
                 {Target(Texture::kFinalImage)}, &constants, nullptr, 0,
                 uint32_t(rect.right - rect.left), uint32_t(rect.bottom - rect.top))) {
     return;
+  }
+  Texture image = Texture::kFinalImage;
+  if (smaa && ApplySmaa(&constants, rect, width, height)) {
+    image = Texture::kSmaaImage;
   }
   ImageConstants ic = {};
   ic.sharpen[0] = float(REXCVAR_GET(scene_fx_sharpen_amount));
@@ -1735,12 +1801,61 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
     ic.finish[1] = float(REXCVAR_GET(scene_fx_vignette));
     ic.finish[2] = float(REXCVAR_GET(scene_fx_film_grain));
   }
+  ic.finish[3] = REXCVAR_GET(scene_fx_16bit) ? 1.0f : 0.0f;
+  ic.retro[0] = retro_color ? 1.0f : 0.0f;
   if (trace) {
-    REXGPU_INFO("Scene effects trace: image effects (sharpen {}, grading {}) on {}x{}", sharpen,
-                grading, width, height);
+    REXGPU_INFO(
+        "Scene effects trace: image effects (SMAA {}, sharpen {}, grading {}, N64 color {}) on "
+        "{}x{}",
+        image == Texture::kSmaaImage, sharpen, grading, retro_color, width, height);
   }
-  DrawFullscreen(Draw::kImage, color_rt, rect, {Source(Texture::kFinalImage)}, &constants, &ic,
-                 sizeof(ic));
+  DrawFullscreen(Draw::kImage, color_rt, rect, {Source(image)}, &constants, &ic, sizeof(ic));
+}
+
+bool SceneEffects::EnsureImageTexture(Texture texture, uint32_t width, uint32_t height) {
+  // SMAA addresses its textures by normalized coordinates from one size: all
+  // the image's textures grow together.
+  image_width_ = std::max(image_width_, width);
+  image_height_ = std::max(image_height_, height);
+  return EnsureTexture(texture, image_width_, image_height_);
+}
+
+bool SceneEffects::ApplySmaa(const void* constants, const Rect& rect, uint32_t width,
+                             uint32_t height) {
+  // SMAA_AREATEX: 160x560 (only the orthogonal subsample-0 corner is used),
+  // SMAA_SEARCHTEX_PACKED_SIZE: 64x16.
+  if (!EnsureTexture(Texture::kSmaaArea, 160, 560) ||
+      !EnsureTexture(Texture::kSmaaSearch, 64, 16) ||
+      !EnsureImageTexture(Texture::kSmaaEdges, width, height) ||
+      !EnsureImageTexture(Texture::kSmaaWeights, width, height) ||
+      !EnsureImageTexture(Texture::kSmaaImage, width, height)) {
+    return false;
+  }
+  if (!smaa_tables_written_) {
+    if (!Dispatch(Pipeline::kSmaaTables, {},
+                  {Target(Texture::kSmaaArea), Target(Texture::kSmaaSearch)}, constants,
+                  smaa::kTableWords, sizeof(smaa::kTableWords), 80, 80)) {
+      return false;
+    }
+    smaa_tables_written_ = true;
+  }
+  // The edges and weights cover the tile plus the shader's margin (no edges
+  // outside the tile), the blending only the tile.
+  constexpr uint32_t kMargin = 40;
+  uint32_t tile_width = uint32_t(rect.right - rect.left);
+  uint32_t tile_height = uint32_t(rect.bottom - rect.top);
+  return Dispatch(Pipeline::kSmaaEdges, {Source(Texture::kFinalImage)},
+                  {Target(Texture::kSmaaEdges)}, constants, nullptr, 0,
+                  tile_width + 2 * kMargin, tile_height + 2 * kMargin) &&
+         Dispatch(Pipeline::kSmaaWeights,
+                  {Source(Texture::kSmaaEdges), Source(Texture::kSmaaArea),
+                   Source(Texture::kSmaaSearch)},
+                  {Target(Texture::kSmaaWeights)}, constants, nullptr, 0,
+                  tile_width + 2 * kMargin, tile_height + 2 * kMargin) &&
+         Dispatch(Pipeline::kSmaaBlend,
+                  {Source(Texture::kFinalImage), Source(Texture::kSmaaWeights)},
+                  {Target(Texture::kSmaaImage)}, constants, nullptr, 0, tile_width,
+                  tile_height);
 }
 
 }  // namespace rex::graphics
