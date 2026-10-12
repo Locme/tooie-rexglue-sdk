@@ -34,7 +34,9 @@ jobs:
           # Only the headers that differ from the commit's.
           $out = "dxbc"
           New-Item -ItemType Directory -Force $out | Out-Null
-          $changed = git diff --name-only -- src/graphics/shaders/bytecode/d3d12_5_1
+          # Changed and new (untracked) headers.
+          $changed = @(git diff --name-only -- src/graphics/shaders/bytecode/d3d12_5_1) +
+            @(git ls-files --others --exclude-standard -- src/graphics/shaders/bytecode/d3d12_5_1)
           foreach ($path in $changed) {
             Copy-Item $path $out
             $name = [IO.Path]::GetFileNameWithoutExtension($path)
