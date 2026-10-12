@@ -18,6 +18,7 @@
 #include <cstring>
 
 #include <rex/cvar.h>
+#include <rex/system/effect_timings.h>
 #include <rex/system/scene_camera.h>
 #include <rex/graphics/registers.h>
 #include <rex/graphics/xenos.h>
@@ -196,6 +197,9 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_cinematic_vignette, 0.35, "GPU/Effects",
 REXCVAR_DEFINE_DOUBLE(scene_fx_cinematic_grain, 0.25, "GPU/Effects",
                       "Cutscene film grain strength (0...1)")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_timing, false, "GPU/Effects",
+                    "Measure the GPU time of each effect (shown in the debug overlay, F3)")
+    REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_sharpen, false, "GPU/Effects",
                     "Contrast-adaptive sharpening of the final image") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_sharpen_amount, 0.5, "GPU/Effects", "Sharpening strength")
@@ -969,8 +973,11 @@ void SceneEffects::CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* d
   // blends every draw alike (SrcAlpha/InvSrcAlpha, opaque geometry too), so
   // a copy taken before "the blended draws" was one taken after the first
   // few meshes, and most of the scene counted as sky.
-  CaptureSceneDepth(*depth_rt, GetDominantDrawState(false), width, height, screen_offset_x,
-                    screen_offset_y, trace, &screen_rect);
+  {
+    TimingScope timing(*this, TimedSection::kDepth);
+    CaptureSceneDepth(*depth_rt, GetDominantDrawState(false), width, height, screen_offset_x,
+                      screen_offset_y, trace, &screen_rect);
+  }
   if (depth_frame_ != frame) {
     return;
   }
@@ -1517,12 +1524,22 @@ void SceneEffects::ComputeEffects(RenderTarget& color_rt, const Rect& rect,
   ao_computed_ = false;
   gi_computed_ = false;
   if (ao || gi) {
+    TimingScope timing(*this, TimedSection::kAo);
     gi_computed_ = ComputeAmbientOcclusion(gi);
     ao_computed_ = ao;
   }
-  contact_shadows_computed_ = REXCVAR_GET(scene_fx_contact_shadows) && ComputeContactShadows();
-  reflections_computed_ = REXCVAR_GET(scene_fx_reflections) && ComputeReflections();
-  volumetrics_computed_ = volumetrics && ComputeVolumetrics();
+  {
+    TimingScope timing(*this, TimedSection::kContactShadows);
+    contact_shadows_computed_ = REXCVAR_GET(scene_fx_contact_shadows) && ComputeContactShadows();
+  }
+  {
+    TimingScope timing(*this, TimedSection::kReflections);
+    reflections_computed_ = REXCVAR_GET(scene_fx_reflections) && ComputeReflections();
+  }
+  {
+    TimingScope timing(*this, TimedSection::kVolumetrics);
+    volumetrics_computed_ = volumetrics && ComputeVolumetrics();
+  }
   fog_enabled_ = FillFogConstants() && fog;
 
   // For the next frame's reprojection.
@@ -1812,6 +1829,7 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
 
 bool SceneEffects::ComputeBloom(const Rect& rect, int32_t screen_offset_x,
                                 int32_t screen_offset_y) {
+  TimingScope timing(*this, TimedSection::kBloom);
   // The tile's bright pass at a quarter of its screen position (the tiles are
   // multiples of 4 high), blurred over it plus the blur's reach above and
   // below.
@@ -1860,6 +1878,86 @@ bool SceneEffects::ComputeBloom(const Rect& rect, int32_t screen_offset_x,
                   &constants, nullptr, 0, uint32_t(right - left), uint32_t(bottom - top));
 }
 
+bool SceneEffects::UpdateTimingFrame() {
+  if (!REXCVAR_GET(scene_fx_timing) || !TimestampsSupported()) {
+    if (timing_frame_ != UINT64_MAX) {
+      // Unfinished slots are not read when timing is back on.
+      for (TimingFrame& timing : timing_frames_) {
+        timing.count = 0;
+      }
+      timing_frame_ = UINT64_MAX;
+    }
+    return false;
+  }
+  uint64_t frame = GetCurrentFrame();
+  if (frame == timing_frame_) {
+    return true;
+  }
+  if (timing_frame_ != UINT64_MAX) {
+    uint32_t previous = uint32_t(timing_frame_ % kTimingFrames);
+    EndTimestampFrame(previous, timing_frames_[previous].count * 2);
+  }
+  timing_frame_ = frame;
+  uint32_t slot = uint32_t(frame % kTimingFrames);
+  // The slot's frame from kTimingFrames ago: long done on the GPU.
+  TimingFrame& timing = timing_frames_[slot];
+  uint64_t ticks[kTimestampsPerFrame];
+  if (timing.count && ReadTimestamps(slot, timing.count * 2, ticks)) {
+    float sums[size_t(TimedSection::kCount)] = {};
+    double tick_ms = TimestampTickMs();
+    for (uint32_t i = 0; i < timing.count; ++i) {
+      uint64_t start = ticks[i * 2], end = ticks[i * 2 + 1];
+      if (end > start) {
+        sums[size_t(timing.sections[i])] += float(double(end - start) * tick_ms);
+      }
+    }
+    // Nested: SMAA within the image effects, the bloom within the composite.
+    sums[size_t(TimedSection::kImage)] = std::max(
+        sums[size_t(TimedSection::kImage)] - sums[size_t(TimedSection::kSmaa)], 0.0f);
+    sums[size_t(TimedSection::kComposite)] = std::max(
+        sums[size_t(TimedSection::kComposite)] - sums[size_t(TimedSection::kBloom)], 0.0f);
+    static const char* const kNames[] = {"Depth copy", "AO",          "Sun shadows",
+                                         "Reflections", "Light shafts", "Composite",
+                                         "Bloom",       "SMAA",         "Image effects"};
+    std::vector<std::pair<std::string, float>> published;
+    float total = 0.0f;
+    for (size_t i = 0; i < size_t(TimedSection::kCount); ++i) {
+      // Smoothed over about 10 frames.
+      timing_ms_[i] += (sums[i] - timing_ms_[i]) * 0.1f;
+      if (timing_ms_[i] >= 0.005f) {
+        published.emplace_back(kNames[i], timing_ms_[i]);
+        total += timing_ms_[i];
+      }
+    }
+    published.emplace_back("Total", total);
+    rex::system::SetEffectTimings(std::move(published));
+  }
+  timing.count = 0;
+  BeginTimestampFrame(slot);
+  return true;
+}
+
+SceneEffects::TimingScope::TimingScope(SceneEffects& effects, TimedSection section)
+    : effects_(effects) {
+  if (!effects_.UpdateTimingFrame()) {
+    return;
+  }
+  uint32_t slot = uint32_t(effects_.timing_frame_ % kTimingFrames);
+  TimingFrame& timing = effects_.timing_frames_[slot];
+  if (timing.count >= kTimestampsPerFrame / 2) {
+    return;
+  }
+  pair_ = timing.count++;
+  timing.sections[pair_] = section;
+  effects_.WriteTimestamp(slot, pair_ * 2);
+}
+
+SceneEffects::TimingScope::~TimingScope() {
+  if (pair_ != UINT32_MAX) {
+    effects_.WriteTimestamp(uint32_t(effects_.timing_frame_ % kTimingFrames), pair_ * 2 + 1);
+  }
+}
+
 bool SceneEffects::ClipToSceneDraws(Rect& rect) const {
   if (!scene_draw_rect_valid_) {
     return rect.right > rect.left && rect.bottom > rect.top;
@@ -1880,6 +1978,7 @@ void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rec
   if (sdr && !ClipToSceneDraws(rect)) {
     return;
   }
+  TimingScope timing(*this, TimedSection::kComposite);
   bool multiply = ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_;
   bool add = fog_enabled_ || volumetrics_computed_ || reflections_computed_;
   bool bloom = sdr && REXCVAR_GET(scene_fx_bloom);
@@ -1941,6 +2040,7 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
   if (!sharpen && !grading && !smaa && !retro_color && !crt && colorblind <= 0 && !cinematic) {
     return;
   }
+  TimingScope timing(*this, TimedSection::kImage);
   // The image, copied to read its neighborhoods.
   if (!EnsureImageTexture(Texture::kFinalImage, width, height)) {
     return;
@@ -2022,6 +2122,7 @@ bool SceneEffects::EnsureImageTexture(Texture texture, uint32_t width, uint32_t 
 
 bool SceneEffects::ApplySmaa(const void* constants, const Rect& rect, uint32_t width,
                              uint32_t height) {
+  TimingScope timing(*this, TimedSection::kSmaa);
   // SMAA_AREATEX: 160x560 (only the orthogonal subsample-0 corner is used),
   // SMAA_SEARCHTEX_PACKED_SIZE: 64x16.
   if (!EnsureTexture(Texture::kSmaaArea, 160, 560) ||

@@ -12,6 +12,8 @@
 #include <rex/ui/overlay/debug_overlay.h>
 #include <rex/version.h>
 #include <imgui.h>
+#include <rex/cvar.h>
+#include <rex/system/effect_timings.h>
 #ifdef REXGLUE_ENABLE_PERF_COUNTERS
 #include <rex/perf/counter.h>
 #include <cinttypes>
@@ -29,14 +31,29 @@ void DebugOverlayDialog::OnDraw(ImGuiIO& io) {
 #ifdef REXGLUE_ENABLE_PERF_COUNTERS
   ImGui::SetNextWindowSize(ImVec2(280, 280), ImGuiCond_FirstUseEver);
 #else
-  ImGui::SetNextWindowSize(ImVec2(220, 60), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(240, 90), ImGuiCond_FirstUseEver);
 #endif
   ImGui::SetNextWindowBgAlpha(0.5f);
-  if (ImGui::Begin("Debug##overlay", nullptr, ImGuiWindowFlags_NoCollapse)) {
+  if (ImGui::Begin("Debug##overlay", nullptr,
+                   ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize)) {
     if (stats_provider_) {
       auto stats = stats_provider_();
       if (stats.frame_count > 0) {
         ImGui::Text("Guest: %.1f FPS (%.2f ms)", stats.fps, stats.frame_time_ms);
+      }
+    }
+    // GPU time of each scene effect (scene_fx_timing).
+    bool timing = rex::cvar::GetFlagByName("scene_fx_timing") == "true";
+    if (ImGui::Checkbox("Effect GPU times", &timing)) {
+      rex::cvar::SetFlagByName("scene_fx_timing", timing ? "true" : "false");
+    }
+    if (timing) {
+      auto timings = rex::system::GetEffectTimings();
+      if (timings.empty()) {
+        ImGui::TextUnformatted("  (measuring...)");
+      }
+      for (const auto& [name, ms] : timings) {
+        ImGui::Text("  %-14s %6.3f ms", name.c_str(), ms);
       }
     }
 #ifdef REXGLUE_ENABLE_PERF_COUNTERS

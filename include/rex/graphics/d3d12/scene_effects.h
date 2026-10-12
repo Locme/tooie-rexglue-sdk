@@ -50,6 +50,12 @@ class D3D12SceneEffects final : public SceneEffects {
   bool DrawFullscreen(Draw draw, RenderTarget& render_target, const Rect& rect,
                       std::initializer_list<Source> sources, const void* constants,
                       const void* extra_constants, size_t extra_constants_size) override;
+  bool TimestampsSupported() const override { return timestamp_heap_ != nullptr; }
+  void BeginTimestampFrame(uint32_t slot) override {}
+  void WriteTimestamp(uint32_t slot, uint32_t index) override;
+  void EndTimestampFrame(uint32_t slot, uint32_t count) override;
+  bool ReadTimestamps(uint32_t slot, uint32_t count, uint64_t* ticks_out) override;
+  double TimestampTickMs() const override { return timestamp_tick_ms_; }
 
  private:
   struct TextureResource {
@@ -88,6 +94,14 @@ class D3D12SceneEffects final : public SceneEffects {
   TextureResource textures_[size_t(Texture::kCount)];
   // Replaced textures, released once the GPU has finished the submission.
   std::vector<std::pair<uint64_t, ID3D12Resource*>> resources_to_release_;
+
+  // scene_fx_timing: timestamps, resolved into a persistently mapped readback
+  // buffer, per timing frame slot.
+  ID3D12QueryHeap* timestamp_heap_ = nullptr;
+  ID3D12Resource* timestamp_readback_ = nullptr;
+  const uint64_t* timestamp_mapping_ = nullptr;
+  double timestamp_tick_ms_ = 0.0;
+  uint64_t timestamp_submissions_[kTimingFrames] = {};
 };
 
 }  // namespace rex::graphics::d3d12

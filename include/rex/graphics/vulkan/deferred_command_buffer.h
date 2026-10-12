@@ -273,6 +273,15 @@ class DeferredCommandBuffer {
     args.query_count = query_count;
   }
 
+  void CmdVkWriteTimestamp(VkPipelineStageFlagBits pipeline_stage, VkQueryPool query_pool,
+                           uint32_t query) {
+    auto& args = *reinterpret_cast<ArgsVkWriteTimestamp*>(
+        WriteCommand(Command::kVkWriteTimestamp, sizeof(ArgsVkWriteTimestamp)));
+    args.pipeline_stage = pipeline_stage;
+    args.query_pool = query_pool;
+    args.query = query;
+  }
+
   // pNext of all barriers must be null.
   void CmdVkPipelineBarrier(VkPipelineStageFlags src_stage_mask,
                             VkPipelineStageFlags dst_stage_mask, VkDependencyFlags dependency_flags,
@@ -381,6 +390,7 @@ class DeferredCommandBuffer {
     kVkSetStencilReference,
     kVkSetStencilWriteMask,
     kVkSetViewport,
+    kVkWriteTimestamp,
   };
 
   struct CommandHeader {
@@ -516,6 +526,12 @@ class DeferredCommandBuffer {
   };
 
   struct ArgsVkEndQuery {
+    VkQueryPool query_pool;
+    uint32_t query;
+  };
+
+  struct ArgsVkWriteTimestamp {
+    VkPipelineStageFlagBits pipeline_stage;
     VkQueryPool query_pool;
     uint32_t query;
   };

@@ -190,6 +190,60 @@ bool D3D12SceneEffects::Initialize() {
     }
   }
   upload_pool_ = std::make_unique<ui::d3d12::D3D12UploadBufferPool>(provider, 64 * 1024);
+
+  // Timestamps for scene_fx_timing (optional).
+  UINT64 timestamp_frequency = 0;
+  if (SUCCEEDED(provider.GetDirectQueue()->GetTimestampFrequency(&timestamp_frequency)) &&
+      timestamp_frequency) {
+    const uint32_t timestamp_count = kTimingFrames * kTimestampsPerFrame;
+    D3D12_QUERY_HEAP_DESC heap_desc = {};
+    heap_desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    heap_desc.Count = timestamp_count;
+    D3D12_RESOURCE_DESC buffer_desc;
+    ui::d3d12::util::FillBufferResourceDesc(buffer_desc, sizeof(uint64_t) * timestamp_count,
+                                            D3D12_RESOURCE_FLAG_NONE);
+    void* mapping = nullptr;
+    D3D12_RANGE read_range = {0, sizeof(uint64_t) * timestamp_count};
+    if (SUCCEEDED(device->CreateQueryHeap(&heap_desc, IID_PPV_ARGS(&timestamp_heap_))) &&
+        SUCCEEDED(device->CreateCommittedResource(
+            &ui::d3d12::util::kHeapPropertiesReadback, provider.GetHeapFlagCreateNotZeroed(),
+            &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS(&timestamp_readback_))) &&
+        SUCCEEDED(timestamp_readback_->Map(0, &read_range, &mapping))) {
+      timestamp_mapping_ = reinterpret_cast<const uint64_t*>(mapping);
+      timestamp_tick_ms_ = 1000.0 / double(timestamp_frequency);
+    } else {
+      ui::d3d12::util::ReleaseAndNull(timestamp_readback_);
+      ui::d3d12::util::ReleaseAndNull(timestamp_heap_);
+    }
+  }
+  return true;
+}
+
+void D3D12SceneEffects::WriteTimestamp(uint32_t slot, uint32_t index) {
+  command_processor_.SubmitBarriers();
+  command_processor_.GetDeferredCommandList().D3DEndQuery(
+      timestamp_heap_, D3D12_QUERY_TYPE_TIMESTAMP, slot * kTimestampsPerFrame + index);
+  timestamp_submissions_[slot] = command_processor_.GetCurrentSubmission();
+}
+
+void D3D12SceneEffects::EndTimestampFrame(uint32_t slot, uint32_t count) {
+  if (!count) {
+    return;
+  }
+  command_processor_.GetDeferredCommandList().D3DResolveQueryData(
+      timestamp_heap_, D3D12_QUERY_TYPE_TIMESTAMP, slot * kTimestampsPerFrame, count,
+      timestamp_readback_, sizeof(uint64_t) * slot * kTimestampsPerFrame);
+  timestamp_submissions_[slot] = command_processor_.GetCurrentSubmission();
+}
+
+bool D3D12SceneEffects::ReadTimestamps(uint32_t slot, uint32_t count, uint64_t* ticks_out) {
+  if (!timestamp_mapping_ ||
+      command_processor_.GetCompletedSubmission() < timestamp_submissions_[slot]) {
+    return false;
+  }
+  std::memcpy(ticks_out, timestamp_mapping_ + slot * kTimestampsPerFrame,
+              sizeof(uint64_t) * count);
   return true;
 }
 
@@ -206,6 +260,12 @@ void D3D12SceneEffects::Shutdown() {
   ui::d3d12::util::ReleaseAndNull(draw_root_signature_);
   ui::d3d12::util::ReleaseAndNull(compute_root_signature_);
   upload_pool_.reset();
+  if (timestamp_readback_ && timestamp_mapping_) {
+    timestamp_readback_->Unmap(0, nullptr);
+  }
+  timestamp_mapping_ = nullptr;
+  ui::d3d12::util::ReleaseAndNull(timestamp_readback_);
+  ui::d3d12::util::ReleaseAndNull(timestamp_heap_);
   // The command processor has awaited the GPU before shutting down.
   for (TextureResource& texture : textures_) {
     ReleaseTexture(texture, true);

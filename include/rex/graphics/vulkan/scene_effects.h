@@ -52,6 +52,11 @@ class VulkanSceneEffects final : public SceneEffects {
   bool DrawFullscreen(Draw draw, RenderTarget& render_target, const Rect& rect,
                       std::initializer_list<Source> sources, const void* constants,
                       const void* extra_constants, size_t extra_constants_size) override;
+  bool TimestampsSupported() const override { return timestamp_pool_ != VK_NULL_HANDLE; }
+  void BeginTimestampFrame(uint32_t slot) override;
+  void WriteTimestamp(uint32_t slot, uint32_t index) override;
+  bool ReadTimestamps(uint32_t slot, uint32_t count, uint64_t* ticks_out) override;
+  double TimestampTickMs() const override { return timestamp_tick_ms_; }
 
  private:
   struct TextureResource {
@@ -134,6 +139,12 @@ class VulkanSceneEffects final : public SceneEffects {
 
   TextureResource textures_[size_t(Texture::kCount)];
   std::vector<Garbage> garbage_;
+
+  // scene_fx_timing: kTimingFrames slots of kTimestampsPerFrame queries.
+  VkQueryPool timestamp_pool_ = VK_NULL_HANDLE;
+  double timestamp_tick_ms_ = 0.0;
+  uint64_t timestamp_mask_ = ~uint64_t(0);
+  uint64_t timestamp_submissions_[kTimingFrames] = {};
 };
 
 }  // namespace rex::graphics::vulkan

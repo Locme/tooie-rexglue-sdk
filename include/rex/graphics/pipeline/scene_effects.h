@@ -226,6 +226,22 @@ class SceneEffects {
                               std::initializer_list<Source> sources, const void* constants,
                               const void* extra_constants, size_t extra_constants_size) = 0;
 
+  // GPU timing (scene_fx_timing), see TimedSection.
+  static constexpr uint32_t kTimingFrames = 4;
+  static constexpr uint32_t kTimestampsPerFrame = 128;
+  // The backends' timestamp queries, kTimingFrames * kTimestampsPerFrame of
+  // them; slot = a frame's range.
+  virtual bool TimestampsSupported() const { return false; }
+  virtual void BeginTimestampFrame(uint32_t slot) {}
+  virtual void WriteTimestamp(uint32_t slot, uint32_t index) {}
+  virtual void EndTimestampFrame(uint32_t slot, uint32_t count) {}
+  // The slot's first count timestamps in ticks, once the GPU has written
+  // them; false if not (yet).
+  virtual bool ReadTimestamps(uint32_t slot, uint32_t count, uint64_t* ticks_out) {
+    return false;
+  }
+  virtual double TimestampTickMs() const { return 0.0; }
+
  private:
   struct Camera {
     // Projected (clip z / w) depth d to view distance z = proj_b / (d - proj_a).
@@ -356,6 +372,42 @@ class SceneEffects {
   void Composite(RenderTarget& color_rt, const Rect& rect, int32_t screen_offset_x,
                  int32_t screen_offset_y, float output_scale_x, float output_scale_y, Draw draw,
                  bool trace);
+  // GPU time of the passes (scene_fx_timing, shown in the F3 overlay), summed
+  // per section over a frame's tiles. Each frame's timestamps go to one of
+  // kTimingFrames slots, read back when that slot comes round again.
+  enum class TimedSection : uint32_t {
+    kDepth,
+    kAo,
+    kContactShadows,
+    kReflections,
+    kVolumetrics,
+    kComposite,
+    kBloom,
+    kSmaa,
+    kImage,
+
+    kCount,
+  };
+  // Starts a frame's slot when the frame changes (reading the slot's old
+  // results first); false when timing is off.
+  bool UpdateTimingFrame();
+  class TimingScope {
+   public:
+    TimingScope(SceneEffects& effects, TimedSection section);
+    ~TimingScope();
+
+   private:
+    SceneEffects& effects_;
+    uint32_t pair_ = UINT32_MAX;
+  };
+  struct TimingFrame {
+    uint32_t count = 0;
+    TimedSection sections[kTimestampsPerFrame / 2];
+  };
+  TimingFrame timing_frames_[kTimingFrames];
+  uint64_t timing_frame_ = UINT64_MAX;
+  float timing_ms_[size_t(TimedSection::kCount)] = {};
+
   // rect: the tile (render target pixels), at screen_offset on the
   // width x height screen.
   void ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, uint32_t width,

@@ -248,6 +248,64 @@ bool VulkanSceneEffects::Initialize() {
 
   upload_pool_ = std::make_unique<ui::vulkan::VulkanUploadBufferPool>(
       vulkan_device, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 64 * 1024);
+
+  // Timestamps for scene_fx_timing, when the queue has them (optional).
+  {
+    VkPhysicalDeviceProperties device_properties;
+    ifn.vkGetPhysicalDeviceProperties(vulkan_device->physical_device(), &device_properties);
+    uint32_t family_count = 0;
+    ifn.vkGetPhysicalDeviceQueueFamilyProperties(vulkan_device->physical_device(), &family_count,
+                                                 nullptr);
+    std::vector<VkQueueFamilyProperties> families(family_count);
+    ifn.vkGetPhysicalDeviceQueueFamilyProperties(vulkan_device->physical_device(), &family_count,
+                                                 families.data());
+    uint32_t family = vulkan_device->queue_family_graphics_compute();
+    uint32_t valid_bits = family < family_count ? families[family].timestampValidBits : 0;
+    if (valid_bits && device_properties.limits.timestampPeriod > 0.0f) {
+      VkQueryPoolCreateInfo pool_info = {};
+      pool_info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+      pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+      pool_info.queryCount = kTimingFrames * kTimestampsPerFrame;
+      if (dfn.vkCreateQueryPool(device, &pool_info, nullptr, &timestamp_pool_) == VK_SUCCESS) {
+        timestamp_tick_ms_ = double(device_properties.limits.timestampPeriod) * 1.0e-6;
+        timestamp_mask_ = valid_bits >= 64 ? ~uint64_t(0) : (uint64_t(1) << valid_bits) - 1;
+      } else {
+        timestamp_pool_ = VK_NULL_HANDLE;
+      }
+    }
+  }
+  return true;
+}
+
+void VulkanSceneEffects::BeginTimestampFrame(uint32_t slot) {
+  command_processor_.EndRenderPass();
+  command_processor_.deferred_command_buffer().CmdVkResetQueryPool(
+      timestamp_pool_, slot * kTimestampsPerFrame, kTimestampsPerFrame);
+}
+
+void VulkanSceneEffects::WriteTimestamp(uint32_t slot, uint32_t index) {
+  // After the barriers of the pass before (or ahead of those of the next).
+  command_processor_.SubmitBarriers(true);
+  command_processor_.deferred_command_buffer().CmdVkWriteTimestamp(
+      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamp_pool_, slot * kTimestampsPerFrame + index);
+  timestamp_submissions_[slot] = command_processor_.GetCurrentSubmission();
+}
+
+bool VulkanSceneEffects::ReadTimestamps(uint32_t slot, uint32_t count, uint64_t* ticks_out) {
+  if (command_processor_.GetCompletedSubmission() < timestamp_submissions_[slot]) {
+    return false;
+  }
+  const ui::vulkan::VulkanDevice* vulkan_device = command_processor_.GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  if (dfn.vkGetQueryPoolResults(vulkan_device->device(), timestamp_pool_,
+                                slot * kTimestampsPerFrame, count, sizeof(uint64_t) * count,
+                                ticks_out, sizeof(uint64_t),
+                                VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) {
+    return false;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    ticks_out[i] &= timestamp_mask_;
+  }
   return true;
 }
 
@@ -258,6 +316,10 @@ void VulkanSceneEffects::Shutdown() {
   }
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   VkDevice device = vulkan_device->device();
+  if (timestamp_pool_ != VK_NULL_HANDLE) {
+    dfn.vkDestroyQueryPool(device, timestamp_pool_, nullptr);
+    timestamp_pool_ = VK_NULL_HANDLE;
+  }
   // The command processor has awaited the GPU before shutting down.
   for (TextureResource& texture : textures_) {
     DestroyTexture(texture, true);
