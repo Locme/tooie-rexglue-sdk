@@ -56,6 +56,10 @@ float3 FxLoadImage(int2 pixel) {
 float4 main(float4 position : SV_Position) : SV_Target {
   int2 pixel = int2(position.xy);
   float3 color = FxLoadImage(pixel);
+  // The split view: the effects on the left half only.
+  if (fx_debug_mode == FX_DEBUG_SPLIT && pixel.x >= int(fx_pass_rect.x + fx_pass_rect.z) / 2) {
+    return float4(color, 1.0);
+  }
   if (fx_image_sharpen.y > 0.0) {
     //   a b c
     //   d e f
