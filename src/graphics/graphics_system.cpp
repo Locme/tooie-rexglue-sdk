@@ -136,6 +136,14 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
     return X_STATUS_UNSUCCESSFUL;
   }
   command_processor_->SetDesiredSwapPostEffect(ParseSwapPostEffect(REXCVAR_GET(swap_post_effect)));
+  // Changed from a settings menu or the console: applied to the next frames,
+  // not read again only at the next start.
+  rex::cvar::RegisterChangeCallback(
+      "swap_post_effect", [this](std::string_view, std::string_view new_value) {
+        if (command_processor_) {
+          command_processor_->SetDesiredSwapPostEffect(ParseSwapPostEffect(std::string(new_value)));
+        }
+      });
 
   // Register GPU MMIO handlers
   // GPU registers are at 0x7FC80000-0x7FCFFFFF
@@ -179,6 +187,7 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
 }
 
 void GraphicsSystem::Shutdown() {
+  rex::cvar::UnregisterChangeCallbacks("swap_post_effect");
   if (command_processor_) {
     command_processor_->Shutdown();
     command_processor_.reset();
