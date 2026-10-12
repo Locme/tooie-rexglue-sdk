@@ -224,6 +224,29 @@ X_RESULT SDLInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
   return X_ERROR_SUCCESS;
 }
 
+X_RESULT SDLInputDriver::GetDeviceMotion(DeviceId id, float out_degrees[3]) {
+  assert(sdl_events_initialized_ && SDL_Gamepad_initialized_);
+
+  auto is_active = this->is_active();
+  if (is_active) {
+    QueueControllerUpdate();
+  }
+
+  auto guard = DrainAndLock();
+
+  auto controller = FindController(id);
+  if (!controller || !controller->has_gyro) {
+    return X_ERROR_DEVICE_NOT_CONNECTED;
+  }
+  // While input goes elsewhere (an overlay), the turn is dropped rather than
+  // handed over all at once later.
+  for (int i = 0; i < 3; i++) {
+    out_degrees[i] = is_active ? controller->gyro_degrees[i] : 0.0f;
+    controller->gyro_degrees[i] = 0.0f;
+  }
+  return X_ERROR_SUCCESS;
+}
+
 X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibration) {
   assert(sdl_events_initialized_ && SDL_Gamepad_initialized_);
 
@@ -435,6 +458,9 @@ void SDLInputDriver::ProcessEventLocked(const SDL_Event& event) {
     case SDL_EVENT_GAMEPAD_BUTTON_UP:
       OnControllerDeviceButtonChangedLocked(event);
       break;
+    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+      OnControllerDeviceSensorUpdateLocked(event);
+      break;
     default:
       break;
   }
@@ -464,14 +490,17 @@ void SDLInputDriver::OnControllerDeviceAddedLocked(const SDL_Event& event) {
   state.sdl = controller;
   state.id = AllocateDeviceId();
   state.state_changed = true;  // XInput starts with packet_number = 1
+  // DualShock/DualSense, Switch and Steam pads have one; XInput pads don't.
+  state.has_gyro = SDL_GamepadHasSensor(controller, SDL_SENSOR_GYRO) &&
+                   SDL_SetGamepadSensorEnabled(controller, SDL_SENSOR_GYRO, true);
   UpdateXCapabilities(state);
   controllers_.push_back(state);
 
   const int ordinal = static_cast<int>(controllers_.size()) - 1;
   SDL_SetGamepadPlayerIndex(controller, ordinal);
 
-  REXLOG_INFO("SDL OnControllerDeviceAdded: connection order {}, device {}.", ordinal,
-              static_cast<uint64_t>(state.id));
+  REXLOG_INFO("SDL OnControllerDeviceAdded: connection order {}, device {}{}.", ordinal,
+              static_cast<uint64_t>(state.id), state.has_gyro ? ", gyro on" : "");
 }
 
 void SDLInputDriver::OnControllerDeviceRemovedLocked(const SDL_Event& event) {
@@ -489,6 +518,29 @@ void SDLInputDriver::OnControllerDeviceRemovedLocked(const SDL_Event& event) {
     SDL_SetGamepadPlayerIndex(controllers_[i].sdl, static_cast<int>(i));
   }
   REXLOG_INFO("SDL OnControllerDeviceRemoved: {} device(s) remain.", controllers_.size());
+}
+
+void SDLInputDriver::OnControllerDeviceSensorUpdateLocked(const SDL_Event& event) {
+  if (event.gsensor.sensor != SDL_SENSOR_GYRO) {
+    return;
+  }
+  auto idx = GetControllerIndexFromInstanceID(event.gsensor.which);
+  if (!idx) {
+    return;
+  }
+  auto& c = controllers_.at(*idx);
+  // Rates in radians per second; summed over the time since the last
+  // sample (a gap, such as the first sample, counts as one 4 ms report).
+  const uint64_t t = event.gsensor.sensor_timestamp;
+  double dt = 0.004;
+  if (c.gyro_timestamp && t > c.gyro_timestamp && t - c.gyro_timestamp < 50'000'000) {
+    dt = double(t - c.gyro_timestamp) * 1e-9;
+  }
+  c.gyro_timestamp = t;
+  constexpr double kDegrees = 180.0 / 3.14159265358979323846;
+  for (int i = 0; i < 3; i++) {
+    c.gyro_degrees[i] += float(event.gsensor.data[i] * dt * kDegrees);
+  }
 }
 
 void SDLInputDriver::OnControllerDeviceAxisMotionLocked(const SDL_Event& event) {

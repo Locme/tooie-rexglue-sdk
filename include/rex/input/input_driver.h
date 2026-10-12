@@ -44,6 +44,13 @@ class InputDriver {
   virtual X_RESULT GetDeviceKeystroke(DeviceId id, uint32_t flags,
                                       X_INPUT_KEYSTROKE* out_keystroke) = 0;
 
+  /// Turn of the pad's gyro since the last call, in degrees about its x
+  /// (pitch, front up positive), y (yaw, left positive) and z (roll) axes.
+  /// X_ERROR_DEVICE_NOT_CONNECTED when the device has no gyro.
+  virtual X_RESULT GetDeviceMotion(DeviceId /*id*/, float /*out_degrees*/[3]) {
+    return X_ERROR_DEVICE_NOT_CONNECTED;
+  }
+
   virtual void OnWindowAvailable(rex::ui::Window* /*window*/) {}
 
   void set_is_active_callback(std::function<bool()> is_active_callback) {
