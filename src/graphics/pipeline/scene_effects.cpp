@@ -455,14 +455,15 @@ void SceneEffects::OnDraw(uint64_t vertex_shader_hash, uint64_t pixel_shader_has
       bool has_rect = GetSdrDrawRect(rect);
       REXGPU_INFO(
           "Scene effects trace: draw z {} zw {} zfunc {} blend {}/{}/{} {} x{} at {},{}-{},{}{} "
-          "scene {} vs {:016X} ps {:016X}",
+          "scene {} vs {:016X} ps {:016X} alpha test {}",
           uint32_t(depth_control.z_enable), uint32_t(depth_control.z_write_enable),
           uint32_t(depth_control.zfunc), uint32_t(blend.color_srcblend),
           uint32_t(blend.color_destblend), uint32_t(blend.color_comb_fcn),
           draw_initiator.source_select == xenos::SourceSelect::kAutoIndex ? "auto" : "indexed",
           uint32_t(draw_initiator.num_indices), rect.left, rect.top, rect.right, rect.bottom,
           has_rect ? "" : " (outside)", sdr_scene_drawn_ ? 1 : 0, vertex_shader_hash,
-          pixel_shader_hash);
+          pixel_shader_hash,
+          uint32_t(register_file_.Get<reg::RB_COLORCONTROL>().alpha_test_enable));
     }
   }
   if (!depth_control.z_enable) {
