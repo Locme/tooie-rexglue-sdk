@@ -16,6 +16,12 @@ FX_BINDING(4) SamplerState fx_clamp : register(s0);
 FX_SUN_CONSTANTS(5)
 FX_BINDING(6) FX_FORMAT_R16F RWTexture2D<float> fx_contact : register(u0);
 
+float3 FxEffectViewPosition(int2 texel) {
+  texel = clamp(texel, int2(0, 0), FxEffectSize(fx_effect_scale) - 1);
+  return FxViewPosition(FxEffectScreen(texel, fx_effect_scale),
+                        fx_effect_depth.Load(int3(texel, 0)));
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
   if (any(int2(id.xy) >= FxEffectSize(fx_effect_scale))) {
@@ -36,16 +42,35 @@ void main(uint3 id : SV_DispatchThreadID) {
     return;
   }
 
+  // A surface turned away from the sun is its own shadow, fading in around
+  // where it turns (not a hard line along a crease in the ground, as when
+  // the ray found it by going into the surface; and not lit near the
+  // screen's edges, where such a ray left the screen first).
+  float3 right = FxEffectViewPosition(texel + int2(1, 0)) - position;
+  float3 left = position - FxEffectViewPosition(texel - int2(1, 0));
+  float3 down = FxEffectViewPosition(texel + int2(0, 1)) - position;
+  float3 up = position - FxEffectViewPosition(texel - int2(0, 1));
+  float3 dx = abs(right.z) < abs(left.z) ? right : left;
+  float3 dy = abs(down.z) < abs(up.z) ? down : up;
+  float3 normal = normalize(cross(dx, dy));
+  if (dot(normal, position) > 0.0) {
+    normal = -normal;
+  }
+  float facing = dot(normal, fx_sun_direction.xyz);
+  float self_occlusion = saturate((0.15 - facing) / 0.3);
+
   float ray_length = fx_sun_contact.x;
   float thickness = fx_sun_contact.y;
   uint step_count = max(uint(fx_sun_contact.z), 1u);
   float jitter = FxNoise(float2(texel));
-  // Not the surface itself: depth precision and the slope it's seen at.
+  // Not the surface itself: the ray starts a little off it, and depth
+  // precision and the slope it's seen at need a margin.
   float bias = 0.002 * distance + 0.01;
+  float3 origin = position + normal * (0.01 * distance);
   float occlusion = 0.0;
   for (uint i = 0; i < step_count; ++i) {
     float t = (float(i) + jitter) / float(step_count);
-    float3 sample_position = position + fx_sun_direction.xyz * (ray_length * t);
+    float3 sample_position = origin + fx_sun_direction.xyz * (ray_length * t);
     if (sample_position.z <= 0.05) {
       break;
     }
@@ -63,5 +88,5 @@ void main(uint3 id : SV_DispatchThreadID) {
       break;
     }
   }
-  fx_contact[texel] = 1.0 - occlusion * lit;
+  fx_contact[texel] = 1.0 - max(occlusion, self_occlusion) * lit;
 }

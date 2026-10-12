@@ -183,9 +183,9 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_colorblind_strength, 1.0, "GPU/Effects",
 REXCVAR_DEFINE_BOOL(scene_fx_bloom, false, "GPU/Effects",
                     "Subtle bloom: a soft glow around the brightest parts of an 8-bit scene "
                     "(before the HUD)") REX_SCENE_FX_LIVE;
-REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_intensity, 0.25, "GPU/Effects", "Bloom strength")
+REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_intensity, 0.8, "GPU/Effects", "Bloom strength")
     .range(0.0, 2.0) REX_SCENE_FX_LIVE;
-REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_threshold, 0.75, "GPU/Effects",
+REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_threshold, 0.5, "GPU/Effects",
                       "Brightness (0...1) above which the scene glows")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_toon, false, "GPU/Effects",
@@ -629,6 +629,12 @@ void SceneEffects::OnDraw(uint64_t vertex_shader_hash, uint64_t pixel_shader_has
   state.depth_range.offset = vte_control.vport_z_offset_ena
                                  ? register_file_.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZOFFSET)
                                  : 0.0f;
+  uint64_t weight = 1;
+  if (vte_control.vport_x_scale_ena && vte_control.vport_y_scale_ena) {
+    float area = 4.0f * std::abs(register_file_.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE) *
+                                 register_file_.Get<float>(XE_GPU_REG_PA_CL_VPORT_YSCALE));
+    weight = std::max<uint64_t>(1, uint64_t(area / 256.0f));
+  }
   // Freed of different world transforms, the same camera differs in rounding.
   auto nearly_equal = [](const float(&a)[4][4], const float(&b)[4][4]) {
     for (uint32_t i = 0; i < 4; ++i) {
@@ -645,18 +651,25 @@ void SceneEffects::OnDraw(uint64_t vertex_shader_hash, uint64_t pixel_shader_has
     if (existing.depth_range.scale == state.depth_range.scale &&
         existing.depth_range.offset == state.depth_range.offset &&
         nearly_equal(existing.rows, state.rows)) {
-      ++existing.count;
+      existing.count += weight;
       return;
     }
   }
-  state.count = 1;
+  state.count = weight;
   if (draw_state_count_ < kMaxDrawStates) {
     draw_states_[draw_state_count_++] = state;
     return;
   }
-  // Full: replace a one-off.
+  // Full: replace the least drawn, if this one counts for more.
+  DrawState* least = &draw_states_[0];
   for (DrawState& existing : draw_states_) {
-    if (existing.count == 1) {
+    if (existing.count < least->count) {
+      least = &existing;
+    }
+  }
+  {
+    DrawState& existing = *least;
+    if (existing.count <= weight) {
       existing = state;
       return;
     }

@@ -295,7 +295,10 @@ class SceneEffects {
   struct DrawState {
     float rows[4][4];
     DepthRange depth_range;
-    uint32_t count;
+    // The draws' viewport area summed (guest pixels / 256, at least 1 each):
+    // the scene's camera covers the screen, a small 3D inset (the HUD's
+    // head) doesn't, however many draws it takes.
+    uint64_t count;
   };
   static constexpr uint32_t kMaxDrawStates = 8;
   // Frames a cascade stays usable without being drawn again.

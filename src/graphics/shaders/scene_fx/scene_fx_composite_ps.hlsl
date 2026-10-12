@@ -86,24 +86,25 @@ FX_EXTRA_CONSTANTS_BLOCK(12) {
   }
 
 // How blurred a pixel at depth is (0...1) with the focus on what is nearest
-// around the screen's center (nothing there but the sky: no blur). Sharp
-// within a quarter of the focus distance, fully blurred at double it (or at
-// half of it in front).
+// at the screen's center or just beside or above it (nothing there but the
+// sky: no blur). Not below the center: that is mostly the ground in front of
+// whoever the shot is of, which took the focus off them. Sharp from 0.7 to
+// 1.5 times the focus distance, fully blurred at 3 times (or at 0.4 times in
+// front).
 float FxDofAmount(float depth) {
   int2 center = int2(fx_scene_size >> 1);
-  int2 spread = int2(fx_scene_size / 10u);
+  int2 spread = int2(fx_scene_size / 12u);
   float focus = fx_sky_distance;
-  [unroll] for (int i = 0; i < 5; ++i) {
-    int2 offset = i == 0 ? int2(0, 0)
-                         : int2(i == 1 ? -1 : (i == 2 ? 1 : 0), i == 3 ? -1 : (i == 4 ? 1 : 0));
+  [unroll] for (int i = 0; i < 4; ++i) {
+    int2 offset = i == 0 ? int2(0, 0) : (i == 1 ? int2(-1, 0) : (i == 2 ? int2(1, 0) : int2(0, -1)));
     focus = min(focus, fx_depth.Load(int3(center + offset * spread, 0)));
   }
   if (focus >= fx_sky_distance) {
     return 0.0;
   }
   float relative = depth / focus;
-  float behind = smoothstep(1.25, 2.0, relative);
-  float in_front = 1.0 - smoothstep(0.5, 0.8, relative);
+  float behind = smoothstep(1.5, 3.0, relative);
+  float in_front = 1.0 - smoothstep(0.4, 0.7, relative);
   return max(behind, in_front);
 }
 
