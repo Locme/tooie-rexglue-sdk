@@ -27,6 +27,7 @@ set(REXGPU_XENOS_SOURCES
     pipeline/scene_effects.cpp
     shared_memory.cpp
     pipeline/texture/cache.cpp
+    pipeline/texture/files.cpp
     pipeline/shader/interpreter.cpp
     pipeline/shader/translator.cpp
     pipeline/shader/translator_disasm.cpp

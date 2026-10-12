@@ -491,6 +491,13 @@ VulkanTextureCache::~VulkanTextureCache() {
   }
 }
 
+void VulkanTextureCache::CompletedSubmissionUpdated(uint64_t completed_submission_index) {
+  TextureCache::CompletedSubmissionUpdated(completed_submission_index);
+  if (replacement_upload_pool_) {
+    replacement_upload_pool_->Reclaim(completed_submission_index);
+  }
+}
+
 void VulkanTextureCache::BeginSubmission(uint64_t new_submission_index) {
   TextureCache::BeginSubmission(new_submission_index);
 
@@ -1141,6 +1148,18 @@ std::unique_ptr<TextureCache::Texture> VulkanTextureCache::CreateTexture(Texture
     unsupported_format_features_used_[uint32_t(key.format)] |= kUnsupportedResourceBit;
     return nullptr;
   }
+  const texture_files::Replacement* replacement = creating_replacement();
+  if (replacement) {
+    VkFormat replacement_format = GetReplacementFormat(key, *replacement);
+    if (replacement_format == VK_FORMAT_UNDEFINED) {
+      RejectReplacement("the file's format doesn't match the host texture format");
+      replacement = nullptr;
+    } else if (replacement_format != formats[0]) {
+      // Converted to RGBA8: a single, unsigned format.
+      formats[0] = replacement_format;
+      formats[1] = VK_FORMAT_UNDEFINED;
+    }
+  }
 
   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
@@ -1171,6 +1190,14 @@ std::unique_ptr<TextureCache::Texture> VulkanTextureCache::CreateTexture(Texture
   image_create_info.extent.depth = is_3d ? depth_or_array_size : 1;
   image_create_info.mipLevels = key.mip_max_level + 1;
   image_create_info.arrayLayers = is_3d ? 1 : depth_or_array_size;
+  if (replacement) {
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    image_create_info.extent.width = replacement->width;
+    image_create_info.extent.height = replacement->height;
+    image_create_info.extent.depth = 1;
+    image_create_info.mipLevels = replacement->mip_count;
+    image_create_info.arrayLayers = 1;
+  }
   image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
   image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
   image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -1213,10 +1240,169 @@ bool VulkanTextureCache::EnsureScaledResolveMemoryCommitted(uint32_t start_unsca
   return EnsureScaledResolveBufferAllocated(start_scaled, length_scaled);
 }
 
+VkFormat VulkanTextureCache::GetReplacementFormat(
+    TextureKey key, const texture_files::Replacement& replacement) const {
+  const HostFormatPair& host_format_pair = GetHostFormatPair(key);
+  VkFormat host_format = host_format_pair.format_unsigned.format;
+  if (host_format == VK_FORMAT_UNDEFINED) {
+    return VK_FORMAT_UNDEFINED;
+  }
+  VkFormat file_format;
+  switch (replacement.format) {
+    case texture_files::kFileFormatR8G8B8A8Unorm:
+      file_format = VK_FORMAT_R8G8B8A8_UNORM;
+      break;
+    case texture_files::kFileFormatBc1Unorm:
+      file_format = VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+      break;
+    case texture_files::kFileFormatBc2Unorm:
+      file_format = VK_FORMAT_BC2_UNORM_BLOCK;
+      break;
+    case texture_files::kFileFormatBc3Unorm:
+      file_format = VK_FORMAT_BC3_UNORM_BLOCK;
+      break;
+    case texture_files::kFileFormatBc4Unorm:
+      file_format = VK_FORMAT_BC4_UNORM_BLOCK;
+      break;
+    case texture_files::kFileFormatBc5Unorm:
+      file_format = VK_FORMAT_BC5_UNORM_BLOCK;
+      break;
+    case texture_files::kFileFormatR8Unorm:
+      file_format = VK_FORMAT_R8_UNORM;
+      break;
+    case texture_files::kFileFormatR8G8Unorm:
+      file_format = VK_FORMAT_R8G8_UNORM;
+      break;
+    case texture_files::kFileFormatB5G6R5Unorm:
+      // The same bit layout (red in the high bits).
+      file_format = VK_FORMAT_R5G6B5_UNORM_PACK16;
+      break;
+    case texture_files::kFileFormatB5G5R5A1Unorm:
+      file_format = VK_FORMAT_A1R5G5B5_UNORM_PACK16;
+      break;
+    case texture_files::kFileFormatB4G4R4A4Unorm:
+      // Nibbles rotated on upload (ConvertB4G4R4A4ToVulkanPack16).
+      file_format = VK_FORMAT_B4G4R4A4_UNORM_PACK16;
+      break;
+    case texture_files::kFileFormatR16G16B16A16Float:
+      file_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+      break;
+    case texture_files::kFileFormatR16G16B16A16Unorm:
+      file_format = VK_FORMAT_R16G16B16A16_UNORM;
+      break;
+    case texture_files::kFileFormatR16G16Float:
+      file_format = VK_FORMAT_R16G16_SFLOAT;
+      break;
+    case texture_files::kFileFormatR16Float:
+      file_format = VK_FORMAT_R16_SFLOAT;
+      break;
+    default:
+      return VK_FORMAT_UNDEFINED;
+  }
+  if (file_format == host_format) {
+    return host_format;
+  }
+  if (file_format == VK_FORMAT_R8G8B8A8_UNORM) {
+    switch (host_format) {
+      case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+      case VK_FORMAT_BC2_UNORM_BLOCK:
+      case VK_FORMAT_BC3_UNORM_BLOCK:
+      case VK_FORMAT_R5G6B5_UNORM_PACK16:
+      case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
+      case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
+        return VK_FORMAT_R8G8B8A8_UNORM;
+      default:
+        break;
+    }
+  }
+  return VK_FORMAT_UNDEFINED;
+}
+
+bool VulkanTextureCache::LoadReplacement(VulkanTexture& texture) {
+  const texture_files::Replacement& replacement = *texture.replacement();
+  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+  if (!replacement_upload_pool_) {
+    replacement_upload_pool_ = std::make_unique<ui::vulkan::VulkanUploadBufferPool>(
+        vulkan_device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, kReplacementUploadPageSize);
+  }
+  DeferredCommandBuffer& command_buffer = command_processor_.deferred_command_buffer();
+  uint64_t submission_index = command_processor_.GetCurrentSubmission();
+  bool convert_4444 = texture.key().format == xenos::TextureFormat::k_4_4_4_4 &&
+                      replacement.format == texture_files::kFileFormatB4G4R4A4Unorm;
+
+  texture.MarkAsUsed();
+  VulkanTexture::Usage texture_old_usage =
+      texture.SetUsage(VulkanTexture::Usage::kTransferDestination);
+  if (texture_old_usage != VulkanTexture::Usage::kTransferDestination) {
+    VkPipelineStageFlags texture_src_stage_mask, texture_dst_stage_mask;
+    VkAccessFlags texture_src_access_mask, texture_dst_access_mask;
+    VkImageLayout texture_old_layout, texture_new_layout;
+    GetTextureUsageMasks(texture_old_usage, texture_src_stage_mask, texture_src_access_mask,
+                         texture_old_layout);
+    GetTextureUsageMasks(VulkanTexture::Usage::kTransferDestination, texture_dst_stage_mask,
+                         texture_dst_access_mask, texture_new_layout);
+    command_processor_.PushImageMemoryBarrier(
+        texture.image(), ui::vulkan::util::InitializeSubresourceRange(), texture_src_stage_mask,
+        texture_dst_stage_mask, texture_src_access_mask, texture_dst_access_mask,
+        texture_old_layout, texture_new_layout);
+  }
+  command_processor_.SubmitBarriers(true);
+
+  for (uint32_t level = 0; level < replacement.mip_count; ++level) {
+    const texture_files::Replacement::Level& level_layout = replacement.levels[level];
+    // Whole block rows per staging request, within a staging page.
+    uint32_t rows_per_chunk = std::max(
+        uint32_t(1),
+        std::min(level_layout.rows,
+                 uint32_t((kReplacementUploadPageSize - 64) / level_layout.row_pitch)));
+    for (uint32_t row = 0; row < level_layout.rows; row += rows_per_chunk) {
+      uint32_t rows = std::min(rows_per_chunk, level_layout.rows - row);
+      size_t chunk_size = size_t(level_layout.row_pitch) * rows;
+      VkBuffer staging_buffer;
+      VkDeviceSize staging_offset;
+      uint8_t* mapping = replacement_upload_pool_->Request(submission_index, chunk_size, 16,
+                                                           staging_buffer, staging_offset);
+      if (!mapping) {
+        return false;
+      }
+      std::memcpy(mapping,
+                  replacement.data.data() + level_layout.offset +
+                      size_t(row) * level_layout.row_pitch,
+                  chunk_size);
+      if (convert_4444) {
+        texture_files::ConvertB4G4R4A4ToVulkanPack16(mapping, chunk_size);
+      }
+      VkBufferImageCopy* copy_region = command_buffer.CmdCopyBufferToImageEmplace(
+          staging_buffer, texture.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1);
+      copy_region->bufferOffset = staging_offset;
+      copy_region->bufferRowLength =
+          (level_layout.row_pitch / replacement.bytes_per_block) * replacement.block_width;
+      copy_region->bufferImageHeight = 0;
+      copy_region->imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      copy_region->imageSubresource.mipLevel = level;
+      copy_region->imageSubresource.baseArrayLayer = 0;
+      copy_region->imageSubresource.layerCount = 1;
+      copy_region->imageOffset.x = 0;
+      copy_region->imageOffset.y = int32_t(row * replacement.block_height);
+      copy_region->imageOffset.z = 0;
+      copy_region->imageExtent.width = level_layout.width;
+      copy_region->imageExtent.height =
+          std::min(rows * replacement.block_height,
+                   level_layout.height - row * replacement.block_height);
+      copy_region->imageExtent.depth = 1;
+    }
+  }
+  replacement_upload_pool_->FlushWrites();
+  return true;
+}
+
 bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base,
                                                                bool load_mips) {
   VulkanTexture& vulkan_texture = static_cast<VulkanTexture&>(texture);
   TextureKey texture_key = vulkan_texture.key();
+  if (vulkan_texture.replacement()) {
+    return LoadReplacement(vulkan_texture);
+  }
 
   // Get the pipeline.
   const HostFormatPair& host_format_pair = GetHostFormatPair(texture_key);
@@ -1875,6 +2061,15 @@ VkImageView VulkanTextureCache::VulkanTexture::GetView(bool is_signed, uint32_t 
   const HostFormatPair& host_format_pair = vulkan_texture_cache.GetHostFormatPair(key());
   VkFormat format =
       (is_signed ? host_format_pair.format_signed : host_format_pair.format_unsigned).format;
+  if (replacement()) {
+    VkFormat replacement_format =
+        vulkan_texture_cache.GetReplacementFormat(key(), *replacement());
+    if (replacement_format != host_format_pair.format_unsigned.format) {
+      // Converted to RGBA8 by the replacement, whatever the signedness asked.
+      format = replacement_format;
+      is_signed = false;
+    }
+  }
   if (format == VK_FORMAT_UNDEFINED) {
     return VK_NULL_HANDLE;
   }

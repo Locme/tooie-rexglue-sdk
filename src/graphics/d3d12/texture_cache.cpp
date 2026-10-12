@@ -648,10 +648,21 @@ bool D3D12TextureCache::Initialize() {
 void D3D12TextureCache::ClearCache() {
   TextureCache::ClearCache();
 
+  if (replacement_upload_pool_) {
+    replacement_upload_pool_->ClearCache();
+  }
+
   // Clear texture descriptor cache.
   srv_descriptor_cache_free_.clear();
   srv_descriptor_cache_allocated_ = 0;
   srv_descriptor_cache_.clear();
+}
+
+void D3D12TextureCache::CompletedSubmissionUpdated(uint64_t completed_submission_index) {
+  TextureCache::CompletedSubmissionUpdated(completed_submission_index);
+  if (replacement_upload_pool_) {
+    replacement_upload_pool_->Reclaim(completed_submission_index);
+  }
 }
 
 void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
@@ -1523,6 +1534,16 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
     unsupported_format_features_used_[uint32_t(key.format)] |= kUnsupportedResourceBit;
     return nullptr;
   }
+  const texture_files::Replacement* replacement = creating_replacement();
+  if (replacement) {
+    DXGI_FORMAT replacement_format = GetReplacementResourceFormat(key, *replacement);
+    if (replacement_format == DXGI_FORMAT_UNKNOWN) {
+      RejectReplacement("the file's format doesn't match the host texture format");
+      replacement = nullptr;
+    } else {
+      desc.Format = replacement_format;
+    }
+  }
   if (key.dimension == xenos::DataDimension::k3D) {
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
   } else {
@@ -1538,6 +1559,13 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
   }
   desc.DepthOrArraySize = key.GetDepthOrArraySize();
   desc.MipLevels = key.mip_max_level + 1;
+  if (replacement) {
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = replacement->width;
+    desc.Height = replacement->height;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = UINT16(replacement->mip_count);
+  }
   desc.SampleDesc.Count = 1;
   desc.SampleDesc.Quality = 0;
   desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -1557,10 +1585,111 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
   return std::unique_ptr<Texture>(new D3D12Texture(*this, key, resource.Get(), resource_state));
 }
 
+DXGI_FORMAT D3D12TextureCache::GetReplacementResourceFormat(
+    TextureKey key, const texture_files::Replacement& replacement) const {
+  DXGI_FORMAT file_format = DXGI_FORMAT(replacement.format);
+  if (file_format == GetDXGIUnormFormat(key)) {
+    // Same data layout as the guest texture's host copy; keep the (possibly
+    // typeless) resource format so signed views keep working.
+    return GetDXGIResourceFormat(key);
+  }
+  if (file_format == DXGI_FORMAT_R8G8B8A8_UNORM) {
+    switch (GetDXGIUnormFormat(key)) {
+      case DXGI_FORMAT_BC1_UNORM:
+      case DXGI_FORMAT_BC2_UNORM:
+      case DXGI_FORMAT_BC3_UNORM:
+      case DXGI_FORMAT_B5G6R5_UNORM:
+      case DXGI_FORMAT_B5G5R5A1_UNORM:
+      case DXGI_FORMAT_B4G4R4A4_UNORM:
+      case DXGI_FORMAT_R8G8B8A8_UNORM:
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+      default:
+        break;
+    }
+  }
+  return DXGI_FORMAT_UNKNOWN;
+}
+
+DXGI_FORMAT D3D12TextureCache::GetReplacementViewFormat(
+    TextureKey key, const texture_files::Replacement& replacement) const {
+  DXGI_FORMAT unorm_format = GetDXGIUnormFormat(key);
+  return DXGI_FORMAT(replacement.format) == unorm_format ? unorm_format
+                                                         : DXGI_FORMAT_R8G8B8A8_UNORM;
+}
+
+bool D3D12TextureCache::LoadReplacement(D3D12Texture& texture) {
+  const texture_files::Replacement& replacement = *texture.replacement();
+  if (!replacement_upload_pool_) {
+    replacement_upload_pool_ = std::make_unique<ui::d3d12::D3D12UploadBufferPool>(
+        command_processor_.GetD3D12Provider(), kReplacementUploadPageSize);
+  }
+  DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
+  uint64_t submission_index = command_processor_.GetCurrentSubmission();
+  DXGI_FORMAT copy_format = GetReplacementResourceFormat(texture.key(), replacement);
+  if (copy_format == DXGI_FORMAT_UNKNOWN) {
+    return false;
+  }
+
+  texture.MarkAsUsed();
+  ID3D12Resource* texture_resource = texture.resource();
+  command_processor_.PushTransitionBarrier(
+      texture_resource, texture.SetResourceState(D3D12_RESOURCE_STATE_COPY_DEST),
+      D3D12_RESOURCE_STATE_COPY_DEST);
+  command_processor_.SubmitBarriers();
+
+  D3D12_TEXTURE_COPY_LOCATION location_source, location_dest;
+  location_source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  location_dest.pResource = texture_resource;
+  location_dest.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  for (uint32_t level = 0; level < replacement.mip_count; ++level) {
+    const texture_files::Replacement::Level& level_layout = replacement.levels[level];
+    uint32_t pitch = rex::align(level_layout.row_pitch, uint32_t(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT));
+    // Whole block rows per staging request, within a staging page.
+    uint32_t rows_per_chunk = std::max(
+        uint32_t(1), std::min(level_layout.rows,
+                              uint32_t((kReplacementUploadPageSize -
+                                        D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT) /
+                                       pitch)));
+    for (uint32_t row = 0; row < level_layout.rows; row += rows_per_chunk) {
+      uint32_t rows = std::min(rows_per_chunk, level_layout.rows - row);
+      ID3D12Resource* staging_buffer;
+      size_t staging_offset;
+      uint8_t* mapping = replacement_upload_pool_->Request(
+          submission_index, size_t(pitch) * rows, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
+          &staging_buffer, &staging_offset, nullptr);
+      if (!mapping) {
+        return false;
+      }
+      const uint8_t* source = replacement.data.data() + level_layout.offset +
+                              size_t(row) * level_layout.row_pitch;
+      for (uint32_t i = 0; i < rows; ++i) {
+        std::memcpy(mapping + size_t(i) * pitch, source + size_t(i) * level_layout.row_pitch,
+                    level_layout.row_pitch);
+      }
+      location_source.pResource = staging_buffer;
+      location_source.PlacedFootprint.Offset = staging_offset;
+      location_source.PlacedFootprint.Footprint.Format = copy_format;
+      location_source.PlacedFootprint.Footprint.Width = level_layout.width;
+      uint32_t y = row * replacement.block_height;
+      location_source.PlacedFootprint.Footprint.Height =
+          std::min(rows * replacement.block_height, level_layout.height - y);
+      location_source.PlacedFootprint.Footprint.Depth = 1;
+      location_source.PlacedFootprint.Footprint.RowPitch = pitch;
+      location_dest.SubresourceIndex = level;
+      command_list.D3DCopyTextureRegion(&location_dest, 0, y, 0, &location_source, nullptr);
+    }
+  }
+  replacement_upload_pool_->FlushWrites();
+  return true;
+}
+
 bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base,
                                                               bool load_mips) {
   D3D12Texture& d3d12_texture = static_cast<D3D12Texture&>(texture);
   TextureKey texture_key = d3d12_texture.key();
+  if (d3d12_texture.replacement()) {
+    return LoadReplacement(d3d12_texture);
+  }
 
   DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
   ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
@@ -2075,6 +2204,13 @@ uint32_t D3D12TextureCache::FindOrCreateTextureDescriptor(D3D12Texture& texture,
   }
 
   uint32_t mip_levels = texture_key.mip_max_level + 1;
+  if (const texture_files::Replacement* replacement = texture.replacement()) {
+    if (DXGI_FORMAT(replacement->format) != GetDXGIUnormFormat(texture_key)) {
+      // Converted to RGBA8 by the replacement, whatever the signedness asked.
+      desc.Format = GetReplacementViewFormat(texture_key, *replacement);
+    }
+    mip_levels = replacement->mip_count;
+  }
   ID3D12Resource* resource_for_view = texture.resource();
   switch (dimension) {
     case xenos::DataDimension::k3D:

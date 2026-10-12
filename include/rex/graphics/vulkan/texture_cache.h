@@ -21,6 +21,7 @@
 #include <rex/graphics/vulkan/shared_memory.h>
 #include <rex/hash.h>
 #include <rex/ui/vulkan/mem_alloc.h>
+#include <rex/ui/vulkan/upload_buffer_pool.h>
 
 namespace rex::graphics::vulkan {
 
@@ -75,6 +76,7 @@ class VulkanTextureCache final : public TextureCache {
 
   ~VulkanTextureCache();
 
+  void CompletedSubmissionUpdated(uint64_t completed_submission_index) override;
   void BeginSubmission(uint64_t new_submission_index) override;
   void BeginFrame() override;
   void EndFrame();
@@ -319,6 +321,15 @@ class VulkanTextureCache final : public TextureCache {
 
   const HostFormatPair& GetHostFormatPair(TextureKey key) const;
 
+  // texture_replacements: the image format for a texture with this key
+  // replaced by the file (the key's unsigned host format when the file has
+  // its layout, R8G8B8A8_UNORM for a plain image over a compressed or 16-bit
+  // color texture), or VK_FORMAT_UNDEFINED if the file can't be used.
+  VkFormat GetReplacementFormat(TextureKey key,
+                                const texture_files::Replacement& replacement) const;
+  // Uploads the replacement file's levels to the host image.
+  bool LoadReplacement(VulkanTexture& texture);
+
   void GetTextureUsageMasks(VulkanTexture::Usage usage, VkPipelineStageFlags& stage_mask,
                             VkAccessFlags& access_mask, VkImageLayout& layout);
   bool EnsureScaledResolveBufferAllocated(uint64_t start_scaled, uint64_t length_scaled);
@@ -328,6 +339,10 @@ class VulkanTextureCache final : public TextureCache {
   xenos::ClampMode NormalizeClampMode(xenos::ClampMode clamp_mode) const;
 
   VulkanCommandProcessor& command_processor_;
+
+  // Staging for texture_replacements uploads, created on first use.
+  static constexpr size_t kReplacementUploadPageSize = 16 * 1024 * 1024;
+  std::unique_ptr<ui::vulkan::VulkanUploadBufferPool> replacement_upload_pool_;
   VkPipelineStageFlags guest_shader_pipeline_stages_;
 
   // Using the Vulkan Memory Allocator because texture count in games is

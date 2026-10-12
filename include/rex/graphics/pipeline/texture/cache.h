@@ -16,9 +16,12 @@
 #include <cstring>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
+#include <string>
 #include <vector>
 
 #include <rex/assert.h>
+#include <rex/graphics/pipeline/texture/files.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/register_file.h>
 #include <rex/graphics/shared_memory.h>
@@ -214,6 +217,11 @@ class TextureCache {
 
     uint64_t GetHostMemoryUsage() const { return host_memory_usage_; }
 
+    // texture_replacements: the file loaded in place of the guest data, if
+    // any. The host texture then has the replacement's size, format and mip
+    // count, and the loads upload the replacement instead of untiling.
+    const texture_files::Replacement* replacement() const { return replacement_.get(); }
+
     uint64_t last_usage_submission_index() const { return last_usage_submission_index_; }
     uint64_t last_usage_time() const { return last_usage_time_; }
     static constexpr uint32_t kOutdatedBitBase = UINT32_C(1) << 0;
@@ -253,6 +261,8 @@ class TextureCache {
     TextureKey key_;
 
     texture_util::TextureGuestLayout guest_layout_;
+
+    std::shared_ptr<const texture_files::Replacement> replacement_;
 
     uint64_t host_memory_usage_ = 0;
 
@@ -509,7 +519,15 @@ class TextureCache {
   // The texture must be created exactly with this key (if the implementation
   // supports the texture with this key, otherwise, or in case of a runtime
   // failure, it should return nullptr), modifying it is not allowed.
+  // If creating_replacement() is set, the host texture is to be created with
+  // the replacement's size, format and mip count instead of the key's (the
+  // Texture constructor stores the replacement); an implementation that can't
+  // use it calls RejectReplacement() before constructing the Texture.
   virtual std::unique_ptr<Texture> CreateTexture(TextureKey key) = 0;
+  const texture_files::Replacement* creating_replacement() const {
+    return creating_replacement_.get();
+  }
+  void RejectReplacement(const char* reason);
 
   // Returns nullptr not only if the key is not supported, but also if couldn't
   // create the texture - if it's nullptr, occasionally a recreation attempt
@@ -560,6 +578,14 @@ class TextureCache {
   bool PrepareTextureLoad(Texture& texture, PendingTextureLoad& pending_load_out,
                           PendingSharedMemoryRange* pending_ranges_out,
                           size_t& pending_range_count_out);
+  // dump_textures: writes the texture's base level once per distinct content.
+  void DumpTextureIfRequested(const Texture& texture);
+  // texture_replacements: the file for the texture's current guest data, or
+  // null. Looked up once per distinct content.
+  std::shared_ptr<const texture_files::Replacement> FindReplacement(const TextureKey& key,
+                                                                    uint64_t* hash_out);
+  bool GetFileDescription(const TextureKey& key, texture_files::Description& description_out,
+                          const uint8_t*& guest_base_out, uint32_t& guest_base_size_out) const;
   bool CommitPreparedTextureLoad(const PendingTextureLoad& pending_load);
 
   void UpdateTexturesTotalHostMemoryUsage(uint64_t add, uint64_t subtract);
@@ -582,6 +608,13 @@ class TextureCache {
 
   const RegisterFile& register_file_;
   SharedMemory& shared_memory_;
+  // dump_textures: hashes already written this run.
+  std::unordered_set<uint64_t> dumped_texture_hashes_;
+  // texture_replacements: files looked up by guest data hash (null = none).
+  std::unordered_map<uint64_t, std::shared_ptr<const texture_files::Replacement>> replacements_;
+  // Set around the CreateTexture call for the Texture constructor to pick up.
+  std::shared_ptr<const texture_files::Replacement> creating_replacement_;
+  std::string creating_replacement_stem_;
   uint32_t draw_resolution_scale_x_;
   uint32_t draw_resolution_scale_y_;
 

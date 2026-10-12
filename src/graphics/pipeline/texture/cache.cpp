@@ -18,7 +18,11 @@
 #include <rex/cvar.h>
 #include <rex/dbg.h>
 #include <rex/graphics/flags.h>
+#include <filesystem>
+#include <unordered_set>
+
 #include <rex/graphics/pipeline/texture/cache.h>
+#include <rex/graphics/pipeline/texture/files.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/register_file.h>
@@ -79,6 +83,14 @@ REXCVAR_DEFINE_INT32(resolution_scale, 1, "GPU",
 
 REXCVAR_DEFINE_BOOL(pre_mask_resolve_l2_block, true, "GPU",
                     "Pre-mask scaled resolve L2 blocks to the write range before iterating");
+REXCVAR_DEFINE_STRING(dump_textures, "", "GPU",
+                      "Folder to write the textures the game uploads to, as DDS files named "
+                      "<format>_<width>x<height>_<hash>.dds (base level only; empty = off)");
+REXCVAR_DEFINE_STRING(texture_replacements, "", "GPU",
+                      "Folder with replacement textures: <name>.dds or <name>.png named like "
+                      "the dump_textures files; loaded in place of the game's textures "
+                      "(may be larger and have more mip levels).");
+
 
 // DEFINE_int32(
 //     draw_resolution_scale_x, 1,
@@ -413,6 +425,112 @@ bool TextureCache::PrepareTextureLoad(Texture& texture, PendingTextureLoad& pend
   return true;
 }
 
+bool TextureCache::GetFileDescription(const TextureKey& key,
+                                      texture_files::Description& description_out,
+                                      const uint8_t*& guest_base_out,
+                                      uint32_t& guest_base_size_out) const {
+  if (!key.base_page || key.scaled_resolve) {
+    return false;
+  }
+  texture_util::TextureGuestLayout guest_layout = key.GetGuestLayout();
+  guest_base_size_out = guest_layout.base.level_data_extent_bytes;
+  if (!guest_base_size_out) {
+    return false;
+  }
+  guest_base_out = shared_memory().memory().TranslatePhysical(key.base_page << 12);
+  description_out = {};
+  description_out.format = key.format;
+  description_out.dimension = xenos::DataDimension(key.dimension);
+  description_out.endian = xenos::Endian(key.endianness);
+  description_out.width = key.GetWidth();
+  description_out.height = key.GetHeight();
+  description_out.depth_or_array_size = key.GetDepthOrArraySize();
+  description_out.tiled = key.tiled;
+  description_out.row_pitch_bytes = guest_layout.base.row_pitch_bytes;
+  return true;
+}
+
+void TextureCache::DumpTextureIfRequested(const Texture& texture) {
+  const std::string& dump_root = REXCVAR_GET(dump_textures);
+  if (dump_root.empty()) {
+    return;
+  }
+  const TextureKey& key = texture.key();
+  texture_files::Description description;
+  const uint8_t* guest_base;
+  uint32_t guest_base_size;
+  if (!GetFileDescription(key, description, guest_base, guest_base_size)) {
+    return;
+  }
+  uint64_t hash = texture_files::HashGuestBase(guest_base, guest_base_size, description);
+  // Each distinct texture once per run (the same bytes reload many times).
+  if (!dumped_texture_hashes_.insert(hash).second) {
+    return;
+  }
+  std::string stem = texture_files::FileStem(description, hash);
+  std::filesystem::path directory(dump_root);
+  std::error_code error;
+  if (std::filesystem::exists(directory / (stem + ".dds"), error)) {
+    return;
+  }
+  if (texture_files::DumpBaseLevel(directory, stem, guest_base, description)) {
+    REXGPU_INFO("Texture dump: {}.dds", stem);
+  } else {
+    REXGPU_WARN("Texture dump: {} not dumpable (format {}, dimension {})", stem,
+                uint32_t(key.format), uint32_t(key.dimension));
+  }
+}
+
+std::shared_ptr<const texture_files::Replacement> TextureCache::FindReplacement(
+    const TextureKey& key, uint64_t* hash_out) {
+  const std::string& root = REXCVAR_GET(texture_replacements);
+  if (root.empty()) {
+    return nullptr;
+  }
+  // 2D, non-array textures only, like the dumps.
+  if (key.dimension != xenos::DataDimension::k2DOrStacked || key.GetDepthOrArraySize() != 1) {
+    return nullptr;
+  }
+  texture_files::Description description;
+  const uint8_t* guest_base;
+  uint32_t guest_base_size;
+  if (!GetFileDescription(key, description, guest_base, guest_base_size)) {
+    return nullptr;
+  }
+  texture_files::FileFormat guest_file_format = texture_files::FileFormatFor(key.format);
+  if (guest_file_format == texture_files::kFileFormatNone) {
+    return nullptr;
+  }
+  uint64_t hash = texture_files::HashGuestBase(guest_base, guest_base_size, description);
+  if (hash_out) {
+    *hash_out = hash;
+  }
+  creating_replacement_stem_ = texture_files::FileStem(description, hash);
+  auto it = replacements_.find(hash);
+  if (it != replacements_.end()) {
+    return it->second;
+  }
+  std::string error;
+  std::shared_ptr<texture_files::Replacement> replacement = texture_files::LoadReplacement(
+      std::filesystem::path(root), creating_replacement_stem_, guest_file_format, &error);
+  if (!replacement && !error.empty()) {
+    REXGPU_WARN("Texture replacement: {} not loaded: {}", creating_replacement_stem_, error);
+  }
+  if (replacement) {
+    replacement->guest_hash = hash;
+  }
+  replacements_.emplace(hash, replacement);
+  return replacement;
+}
+
+void TextureCache::RejectReplacement(const char* reason) {
+  if (!creating_replacement_) {
+    return;
+  }
+  REXGPU_WARN("Texture replacement: {} not used: {}", creating_replacement_stem_, reason);
+  creating_replacement_.reset();
+}
+
 bool TextureCache::CommitPreparedTextureLoad(const PendingTextureLoad& pending_load) {
   if (!pending_load.texture || (!pending_load.load_base && !pending_load.load_mips)) {
     return true;
@@ -432,6 +550,22 @@ bool TextureCache::CommitPreparedTextureLoad(const PendingTextureLoad& pending_l
     if (pending_load.load_mips && !EnsureScaledResolveMemoryCommitted(
                                       texture_key.mip_page << 12, texture.GetGuestMipsSize(), 4)) {
       return false;
+    }
+  }
+
+  if (pending_load.load_base && !texture_key.scaled_resolve) {
+    DumpTextureIfRequested(texture);
+    if (texture.replacement()) {
+      // The guest rewrote the memory of a replaced texture; the replacement
+      // was chosen for the data at creation and stays.
+      texture_files::Description description;
+      const uint8_t* guest_base;
+      uint32_t guest_base_size;
+      if (GetFileDescription(texture_key, description, guest_base, guest_base_size) &&
+          texture_files::HashGuestBase(guest_base, guest_base_size, description) !=
+              texture.replacement()->guest_hash) {
+        texture.LogAction("Guest data changed under a replacement; still showing the file");
+      }
     }
   }
 
@@ -640,6 +774,7 @@ TextureCache::Texture::Texture(TextureCache& texture_cache, const TextureKey& ke
     : texture_cache_(texture_cache),
       key_(key),
       guest_layout_(key.GetGuestLayout()),
+      replacement_(texture_cache.creating_replacement_),
       last_usage_submission_index_(texture_cache.current_submission_index_),
       last_usage_time_(texture_cache.current_submission_time_),
       used_previous_(track_usage ? texture_cache.texture_used_last_ : nullptr),
@@ -867,7 +1002,17 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
   // Create the texture and add it to the map.
   Texture* texture;
   {
+    uint64_t replacement_hash = 0;
+    creating_replacement_ = FindReplacement(key, &replacement_hash);
     std::unique_ptr<Texture> new_texture = CreateTexture(key);
+    if (new_texture && new_texture->replacement()) {
+      REXGPU_INFO("Texture replacement: {} ({}x{} format {}) replaced by a {}x{} file with {} "
+                  "mip level(s)",
+                  creating_replacement_stem_, key.GetWidth(), key.GetHeight(),
+                  uint32_t(key.format), new_texture->replacement()->width,
+                  new_texture->replacement()->height, new_texture->replacement()->mip_count);
+    }
+    creating_replacement_.reset();
     if (!new_texture) {
       key.LogAction("Failed to create");
       return nullptr;

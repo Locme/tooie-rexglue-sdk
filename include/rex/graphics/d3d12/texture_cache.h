@@ -27,6 +27,7 @@
 #include <rex/graphics/xenos.h>
 #include <rex/ui/d3d12/d3d12_api.h>
 #include <rex/ui/d3d12/d3d12_provider.h>
+#include <rex/ui/d3d12/d3d12_upload_buffer_pool.h>
 
 namespace rex::graphics::d3d12 {
 
@@ -86,6 +87,7 @@ class D3D12TextureCache final : public TextureCache {
 
   void ClearCache() override;
 
+  void CompletedSubmissionUpdated(uint64_t completed_submission_index) override;
   void BeginSubmission(uint64_t new_submission_index) override;
   void BeginFrame() override;
   void EndFrame();
@@ -380,6 +382,17 @@ class D3D12TextureCache final : public TextureCache {
 
   LoadShaderIndex GetLoadShaderIndex(TextureKey key) const;
 
+  // texture_replacements: the resource format for a texture with this key
+  // replaced by the file, or DXGI_FORMAT_UNKNOWN if the file can't be used
+  // for the host format of the key (the SRV format is then the key's unorm
+  // format if that's the file's, or R8G8B8A8_UNORM).
+  DXGI_FORMAT GetReplacementResourceFormat(TextureKey key,
+                                           const texture_files::Replacement& replacement) const;
+  DXGI_FORMAT GetReplacementViewFormat(TextureKey key,
+                                       const texture_files::Replacement& replacement) const;
+  // Uploads the replacement file's levels to the host texture.
+  bool LoadReplacement(D3D12Texture& texture);
+
   static constexpr bool AreDimensionsCompatible(xenos::FetchOpDimension binding_dimension,
                                                 xenos::DataDimension resource_dimension) {
     switch (binding_dimension) {
@@ -455,6 +468,10 @@ class D3D12TextureCache final : public TextureCache {
   static const HostFormat host_formats_[64];
 
   D3D12CommandProcessor& command_processor_;
+
+  // Staging for texture_replacements uploads, created on first use.
+  static constexpr size_t kReplacementUploadPageSize = 16 * 1024 * 1024;
+  std::unique_ptr<ui::d3d12::D3D12UploadBufferPool> replacement_upload_pool_;
   bool bindless_resources_used_;
 
   Microsoft::WRL::ComPtr<ID3D12RootSignature> load_root_signature_;
