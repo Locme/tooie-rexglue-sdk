@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 
 #include <rex/cvar.h>
@@ -118,6 +119,11 @@ REXCVAR_DEFINE_BOOL(scene_fx_volumetrics_full_resolution, false, "GPU/Effects",
     REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_STRING(scene_fx_sun_tint, "1.0,0.9,0.75", "GPU/Effects",
                       "Color of scattered sunlight relative to the sky's (r,g,b)")
+    REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_STRING(scene_fx_sun_direction, "", "GPU/Effects",
+                      "World-space direction toward the sun, \"x,y,z\", for games without sun "
+                      "shadow maps (the contact shadows then run as screen-space sun shadows); "
+                      "empty = from the game's shadow maps, else straight up")
     REX_SCENE_FX_LIVE;
 
 // Fog.
@@ -1265,20 +1271,41 @@ bool SceneEffects::GetSunDirection(const CameraBasis& basis, float toward_sun_ou
       cascade = &candidate;
     }
   }
+  bool from_shadows = cascade != nullptr;
   if (cascade) {
     const float* depth_axis = cascade->rows[2];
     float length = Length3(depth_axis);
     for (uint32_t i = 0; i < 3; ++i) {
       sun_world[i] = -depth_axis[i] / length;
     }
+  } else if (GetConfiguredSunDirection(sun_world)) {
+    from_shadows = true;
   } else {
     sun_world[basis.up_axis] = basis.up_sign;
   }
-  bool from_shadows = cascade != nullptr;
   toward_sun_out[0] = Dot3(sun_world, basis.right);
   toward_sun_out[1] = Dot3(sun_world, basis.up);
   toward_sun_out[2] = Dot3(sun_world, basis.forward);
   return from_shadows;
+}
+
+bool SceneEffects::GetConfiguredSunDirection(float toward_sun_world_out[3]) {
+  const std::string& text = REXCVAR_GET(scene_fx_sun_direction);
+  if (text.empty()) {
+    return false;
+  }
+  float v[3] = {0.0f, 0.0f, 0.0f};
+  if (std::sscanf(text.c_str(), "%f,%f,%f", &v[0], &v[1], &v[2]) != 3) {
+    return false;
+  }
+  float length = Length3(v);
+  if (length < 1.0e-6f) {
+    return false;
+  }
+  for (uint32_t i = 0; i < 3; ++i) {
+    toward_sun_world_out[i] = v[i] / length;
+  }
+  return true;
 }
 
 void SceneEffects::GetSunTint(float tint_out[3]) {
@@ -1442,8 +1469,10 @@ bool SceneEffects::ComputeAmbientOcclusion(bool global_illumination) {
 
 bool SceneEffects::ComputeContactShadows() {
   CameraBasis basis;
-  // Toward the sun, which only the shadow maps tell.
-  if (!camera_.has_matrix || !GetShadowCascadeCount() || !GetCameraBasis(camera_.rows, basis)) {
+  // Toward the sun: the shadow maps tell, or scene_fx_sun_direction does.
+  float configured_sun[3];
+  if (!camera_.has_matrix || !GetCameraBasis(camera_.rows, basis) ||
+      (!GetShadowCascadeCount() && !GetConfiguredSunDirection(configured_sun))) {
     return false;
   }
   SunConstants sun;

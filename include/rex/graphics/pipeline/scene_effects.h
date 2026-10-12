@@ -307,6 +307,8 @@ class SceneEffects {
   bool GetHeightRow(const CameraBasis& basis, float height_out[4]) const;
   bool GetSunDirection(const CameraBasis& basis, float toward_sun_out[3]) const;
   static void GetSunTint(float tint_out[3]);
+  // scene_fx_sun_direction, normalized; false when unset or unparsable.
+  static bool GetConfiguredSunDirection(float toward_sun_world_out[3]);
   // The sun, the shadow cascades captured this frame and the effects'
   // parameters (scene_fx_sun.hlsli), and the shadow textures to bind.
   void FillSunConstants(const CameraBasis& basis, void* constants_out,
