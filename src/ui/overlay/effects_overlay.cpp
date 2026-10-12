@@ -356,6 +356,14 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     ImGui::PopID();
   }
 
+  if (EffectHeader("Cutscene Vignette and Grain", "scene_fx_cinematic")) {
+    ImGui::PushID("cinematic");
+    Description("A subtle vignette and film grain only while the picture is letterboxed.");
+    SliderCvar("Vignette", "scene_fx_cinematic_vignette", 0.0f, 1.0f);
+    SliderCvar("Grain", "scene_fx_cinematic_grain", 0.0f, 1.0f);
+    ImGui::PopID();
+  }
+
   if (EffectHeader("16-bit Effects", "scene_fx_16bit")) {
     ImGui::PushID("16bit");
     Description(

@@ -23,6 +23,12 @@ FX_EXTRA_CONSTANTS_BLOCK(1) {
   // x = colorblind correction (0 off, 1 deuteranopia, 2 protanopia, 3
   // tritanopia), y = its strength.
   float4 fx_image_colorblind;
+  // The vignette's rectangle (the 3D's area on the screen), in render target
+  // pixels.
+  float4 fx_image_area;
+  // xy = screen pixel - render target pixel (a tile of a tiled frame), zw =
+  // the screen's size.
+  float4 fx_image_screen;
 };
 
 // Daltonization: the colors a dichromat sees (Machado et al. 2009, severity
@@ -97,13 +103,13 @@ float4 main(float4 position : SV_Position) : SV_Target {
   color += fx_image_finish.x * (1.0 - color) * (1.0 - color) * (1.0 - color);
   color = pow(saturate(color), fx_image_white.w);
 
-  // Vignette, over the image's rectangle.
-  float2 rect_size = float2(fx_pass_rect.zw - fx_pass_rect.xy);
-  float2 centered = (position.xy - float2(fx_pass_rect.xy)) / rect_size * 2.0 - 1.0;
-  centered.x *= rect_size.x / rect_size.y;
+  // Vignette, over the 3D's area (all of the tiles of a tiled frame).
+  float2 area_size = max(fx_image_area.zw - fx_image_area.xy, 1.0);
+  float2 centered = (position.xy - fx_image_area.xy) / area_size * 2.0 - 1.0;
+  centered.x *= area_size.x / area_size.y;
   color *= saturate(1.0 - fx_image_finish.y * dot(centered, centered) * 0.25);
   // Film grain, changing every frame, stronger in the midtones.
-  float grain = FxNoise(position.xy + float2(17.0, 59.0) * float(fx_frame & 255)) - 0.5;
+  float grain = FxNoise(position.xy + fx_image_screen.xy + float2(17.0, 59.0) * float(fx_frame & 255)) - 0.5;
   float midtones = 4.0 * FxLuminance(color) * (1.0 - FxLuminance(color));
   color += grain * fx_image_finish.z * 0.15 * midtones;
   if (fx_image_colorblind.x > 0.0) {
@@ -113,7 +119,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     // A CRT showing the N64's 240 lines: each line's beam brightest at its
     // center, darker between lines (brightened back to keep the average), and
     // an aperture grille of red, green and blue stripes.
-    float scanline = (position.y - float(fx_pass_rect.y)) / rect_size.y * 240.0;
+    float scanline = (position.y + fx_image_screen.y) / max(fx_image_screen.w, 1.0) * 240.0;
     float beam = 0.5 + 0.5 * cos(6.2831853 * (frac(scanline) - 0.5));
     color *= lerp(1.0, (0.35 + 0.65 * beam) * 1.25, fx_image_retro.y);
     uint stripe = uint(position.x) % 3u;

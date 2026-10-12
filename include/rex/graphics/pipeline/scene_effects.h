@@ -356,8 +356,11 @@ class SceneEffects {
   void Composite(RenderTarget& color_rt, const Rect& rect, int32_t screen_offset_x,
                  int32_t screen_offset_y, float output_scale_x, float output_scale_y, Draw draw,
                  bool trace);
+  // rect: the tile (render target pixels), at screen_offset on the
+  // width x height screen.
   void ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, uint32_t width,
-                         uint32_t height, bool trace);
+                         uint32_t height, int32_t screen_offset_x, int32_t screen_offset_y,
+                         bool trace);
   // SMAA of kFinalImage's rect into kSmaaImage; false if it could not run.
   // The multiply and add composites, or with scene_fx_16bit on an 8-bit
   // (sdr) scene, the resolve.
@@ -455,6 +458,13 @@ class SceneEffects {
   // it, which have no depth and would pass for sky.
   Rect scene_draw_rect_ = {};
   bool scene_draw_rect_valid_ = false;
+  // The same over a whole frame, in screen pixels (frame_scene_rect_frame_'s),
+  // and the last whole frame's: letterboxed when it is shorter than the
+  // screen (the title, cutscenes).
+  Rect frame_scene_rect_ = {};
+  uint64_t frame_scene_rect_frame_ = UINT64_MAX;
+  Rect last_frame_scene_rect_ = {};
+  bool last_frame_scene_rect_valid_ = false;
   // Of the captured scene depth.
   DepthRange scene_depth_range_;
   // The finer cascade first.

@@ -187,6 +187,15 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_intensity, 0.25, "GPU/Effects", "Bloom stre
 REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_threshold, 0.75, "GPU/Effects",
                       "Brightness (0...1) above which the scene glows")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_cinematic, false, "GPU/Effects",
+                    "Subtle vignette and film grain in letterboxed scenes only (cutscenes, the "
+                    "title)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_cinematic_vignette, 0.35, "GPU/Effects",
+                      "Cutscene vignette strength (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_cinematic_grain, 0.25, "GPU/Effects",
+                      "Cutscene film grain strength (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_sharpen, false, "GPU/Effects",
                     "Contrast-adaptive sharpening of the final image") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_sharpen_amount, 0.5, "GPU/Effects", "Sharpening strength")
@@ -330,6 +339,8 @@ struct ImageConstants {
   float finish[4];
   float retro[4];
   float colorblind[4];
+  float area[4];
+  float screen[4];
 };
 
 // fx_effect_flags, scene_fx_debug and fx_composite_mode, as in
@@ -487,7 +498,8 @@ bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
 bool SceneEffects::AnyImageEffectEnabled() {
   return REXCVAR_GET(scene_fx_sharpen) || REXCVAR_GET(scene_fx_grading) ||
          REXCVAR_GET(scene_fx_smaa) || REXCVAR_GET(scene_fx_retro_16bit_color) ||
-         REXCVAR_GET(scene_fx_retro_crt) || REXCVAR_GET(scene_fx_colorblind) > 0;
+         REXCVAR_GET(scene_fx_retro_crt) || REXCVAR_GET(scene_fx_colorblind) > 0 ||
+         REXCVAR_GET(scene_fx_cinematic);
 }
 
 bool SceneEffects::SunShadowsNeeded() {
@@ -545,6 +557,30 @@ void SceneEffects::OnDraw(uint64_t vertex_shader_hash, uint64_t pixel_shader_has
   sdr_scene_drawn_ = true;
   Rect draw_rect;
   if (GetSdrDrawRect(draw_rect)) {
+    // In screen pixels, over the frame.
+    {
+      auto window_offset = register_file_.Get<reg::PA_SC_WINDOW_OFFSET>();
+      int32_t offset_x = -int32_t(window_offset.window_x_offset) *
+                         int32_t(render_target_cache_.draw_resolution_scale_x());
+      int32_t offset_y = -int32_t(window_offset.window_y_offset) *
+                         int32_t(render_target_cache_.draw_resolution_scale_y());
+      Rect screen = {draw_rect.left + offset_x, draw_rect.top + offset_y,
+                     draw_rect.right + offset_x, draw_rect.bottom + offset_y};
+      uint64_t frame = GetCurrentFrame();
+      if (frame_scene_rect_frame_ != frame) {
+        if (frame_scene_rect_frame_ != UINT64_MAX) {
+          last_frame_scene_rect_ = frame_scene_rect_;
+          last_frame_scene_rect_valid_ = true;
+        }
+        frame_scene_rect_frame_ = frame;
+        frame_scene_rect_ = screen;
+      } else {
+        frame_scene_rect_.left = std::min(frame_scene_rect_.left, screen.left);
+        frame_scene_rect_.top = std::min(frame_scene_rect_.top, screen.top);
+        frame_scene_rect_.right = std::max(frame_scene_rect_.right, screen.right);
+        frame_scene_rect_.bottom = std::max(frame_scene_rect_.bottom, screen.bottom);
+      }
+    }
     if (!scene_draw_rect_valid_) {
       scene_draw_rect_ = draw_rect;
       scene_draw_rect_valid_ = true;
@@ -765,7 +801,7 @@ void SceneEffects::OnResolve() {
     return;
   }
   image_frame_ = frame;
-  ApplyImageEffects(*source_rt, rect, width, height, trace);
+  ApplyImageEffects(*source_rt, rect, width, height, 0, 0, trace);
   if (debug_mode > kDebugSplit && effects_frame_ == frame) {
     // An effect alone, without the guest's tonemapping.
     Composite(*source_rt, rect, 0, 0, float(scene_width_) / float(width),
@@ -909,7 +945,7 @@ void SceneEffects::ResolveSdrSceneTile(RenderTarget& color_rt, RenderTarget* dep
                           screen_offset_y, trace);
   }
   image_frame_ = GetCurrentFrame();
-  ApplyImageEffects(color_rt, rect, width, height, trace);
+  ApplyImageEffects(color_rt, rect, width, height, screen_offset_x, screen_offset_y, trace);
 }
 
 void SceneEffects::CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* depth_rt,
@@ -1883,14 +1919,26 @@ void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rec
 }
 
 void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, uint32_t width,
-                                     uint32_t height, bool trace) {
+                                     uint32_t height, int32_t screen_offset_x,
+                                     int32_t screen_offset_y, bool trace) {
   bool sharpen = REXCVAR_GET(scene_fx_sharpen);
   bool grading = REXCVAR_GET(scene_fx_grading);
   bool smaa = REXCVAR_GET(scene_fx_smaa);
   bool retro_color = REXCVAR_GET(scene_fx_retro_16bit_color);
   bool crt = REXCVAR_GET(scene_fx_retro_crt);
   int32_t colorblind = REXCVAR_GET(scene_fx_colorblind);
-  if (!sharpen && !grading && !smaa && !retro_color && !crt && colorblind <= 0) {
+  // The 3D's area on the screen (last frame's), and whether it's letterboxed.
+  Rect area = {0, 0, int32_t(width), int32_t(height)};
+  bool letterboxed = false;
+  if (last_frame_scene_rect_valid_) {
+    const Rect& last = last_frame_scene_rect_;
+    if (last.right > last.left && last.bottom > last.top) {
+      area = last;
+      letterboxed = (last.bottom - last.top) * 100 < int32_t(height) * 95;
+    }
+  }
+  bool cinematic = REXCVAR_GET(scene_fx_cinematic) && letterboxed;
+  if (!sharpen && !grading && !smaa && !retro_color && !crt && colorblind <= 0 && !cinematic) {
     return;
   }
   // The image, copied to read its neighborhoods.
@@ -1941,6 +1989,20 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
   ic.retro[2] = crt ? float(REXCVAR_GET(scene_fx_retro_crt_mask)) : 0.0f;
   ic.colorblind[0] = float(std::clamp(colorblind, 0, 3));
   ic.colorblind[1] = float(REXCVAR_GET(scene_fx_colorblind_strength));
+  if (cinematic) {
+    ic.finish[1] += float(REXCVAR_GET(scene_fx_cinematic_vignette));
+    ic.finish[2] += float(REXCVAR_GET(scene_fx_cinematic_grain));
+  }
+  // The vignette's rectangle (the 3D's area), in this tile's render target
+  // pixels.
+  ic.area[0] = float(area.left - screen_offset_x);
+  ic.area[1] = float(area.top - screen_offset_y);
+  ic.area[2] = float(area.right - screen_offset_x);
+  ic.area[3] = float(area.bottom - screen_offset_y);
+  ic.screen[0] = float(screen_offset_x);
+  ic.screen[1] = float(screen_offset_y);
+  ic.screen[2] = float(width);
+  ic.screen[3] = float(height);
   if (trace) {
     REXGPU_INFO(
         "Scene effects trace: image effects (SMAA {}, sharpen {}, grading {}, N64 color {}, CRT "
