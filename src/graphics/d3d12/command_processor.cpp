@@ -2295,7 +2295,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
   }
 
   if (scene_effects_) {
-    scene_effects_->OnDraw();
+    scene_effects_->OnDraw(
+        active_vertex_shader() ? active_vertex_shader()->ucode_data_hash() : 0,
+        active_pixel_shader() ? active_pixel_shader()->ucode_data_hash() : 0);
   }
 
   bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
@@ -2356,6 +2358,11 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
   }
 
   reg::RB_DEPTHCONTROL normalized_depth_control = draw_util::GetNormalizedDepthControl(regs);
+  if (scene_effects_ && normalized_depth_control.z_write_enable &&
+      scene_effects_->SuppressSpriteDepthWrite(vertex_shader->ucode_data_hash())) {
+    // A sprite: not in the depth the scene effects see.
+    normalized_depth_control.z_write_enable = 0;
+  }
 
   // Shader modifications.
   uint32_t ps_param_gen_pos = UINT32_MAX;

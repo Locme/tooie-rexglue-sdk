@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <unordered_map>
 #include <initializer_list>
 
 #include <rex/graphics/pipeline/render_target/cache.h>
@@ -40,9 +41,15 @@ class SceneEffects {
   virtual ~SceneEffects();
 
   // Call for every guest draw (not resolves) - cheap, only reads registers.
-  void OnDraw();
+  // The hashes are of the draw's shaders (SuppressSpriteDepthWrite, the trace).
+  void OnDraw(uint64_t vertex_shader_hash, uint64_t pixel_shader_hash);
   // Call in an open submission, before the render target cache resolves.
   void OnResolve();
+  // Whether the draw being issued, if it would write depth, is to be kept out
+  // of the depth the effects see: a sprite (a billboard: a glow, a particle),
+  // told by its vertex shader never drawing more than one quad, while
+  // scene_fx_sprite_depth_write is off and a scene effect is on.
+  bool SuppressSpriteDepthWrite(uint64_t vertex_shader_hash);
 
  protected:
   using RenderTarget = RenderTargetCache::RenderTarget;
@@ -337,6 +344,9 @@ class SceneEffects {
   uint32_t scene_width_ = 0;
   uint32_t scene_height_ = 0;
   uint64_t depth_frame_ = UINT64_MAX;
+  // Per vertex shader, the most indices one of its draws has had: a shader
+  // that only ever draws single quads draws sprites.
+  std::unordered_map<uint64_t, uint32_t> vertex_shader_max_indices_;
   // The depth texture this frame is copied into (the other one is the
   // previous frame's), swapped at the frame's first copy.
   uint32_t depth_index_ = 0;

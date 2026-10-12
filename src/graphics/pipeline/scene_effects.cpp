@@ -206,6 +206,11 @@ REXCVAR_DEFINE_INT32(scene_fx_debug, 0, "GPU/Effects",
     .range(0, 7) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_trace, false, "GPU/Effects",
                     "Log the effects' decisions for one frame, then reset") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_sprite_depth_write, false, "GPU/Effects",
+                    "Let single-quad draws (billboards: glows, particles) write depth while a "
+                    "scene effect is on. Off keeps them out of the depth the effects see, which "
+                    "took a glow sprite for a disk hanging in front of its surface")
+    REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_INT32(scene_fx_trace_every, 0, "GPU/Effects",
                      "Log the effects' decisions (as scene_fx_trace) every this many frames, "
                      "for runs without a way to flip scene_fx_trace at the right moment")
@@ -404,6 +409,21 @@ bool SceneEffects::AnySceneEffectEnabled() {
          REXCVAR_GET(scene_fx_volumetrics) || REXCVAR_GET(scene_fx_fog);
 }
 
+bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
+  if (REXCVAR_GET(scene_fx_sprite_depth_write) || !AnySceneEffectEnabled()) {
+    return false;
+  }
+  auto draw_initiator = register_file_.Get<reg::VGT_DRAW_INITIATOR>();
+  if (draw_initiator.source_select == xenos::SourceSelect::kAutoIndex ||
+      draw_initiator.num_indices > 6) {
+    return false;
+  }
+  // World geometry comes in small pieces too (this game draws a few
+  // triangles at a time), but through a shader that also draws bigger ones.
+  auto it = vertex_shader_max_indices_.find(vertex_shader_hash);
+  return it != vertex_shader_max_indices_.end() && it->second <= 6;
+}
+
 bool SceneEffects::AnyImageEffectEnabled() {
   return REXCVAR_GET(scene_fx_sharpen) || REXCVAR_GET(scene_fx_grading);
 }
@@ -413,9 +433,16 @@ bool SceneEffects::SunShadowsNeeded() {
          REXCVAR_GET(scene_fx_fog);
 }
 
-void SceneEffects::OnDraw() {
+void SceneEffects::OnDraw(uint64_t vertex_shader_hash, uint64_t pixel_shader_hash) {
   if (!AnySceneEffectEnabled()) {
     return;
+  }
+  {
+    auto draw_initiator = register_file_.Get<reg::VGT_DRAW_INITIATOR>();
+    if (draw_initiator.source_select != xenos::SourceSelect::kAutoIndex) {
+      uint32_t& max_indices = vertex_shader_max_indices_[vertex_shader_hash];
+      max_indices = std::max(max_indices, uint32_t(draw_initiator.num_indices));
+    }
   }
   // Only depth-writing draws define the depth being resolved.
   auto depth_control = register_file_.Get<reg::RB_DEPTHCONTROL>();
@@ -428,13 +455,14 @@ void SceneEffects::OnDraw() {
       bool has_rect = GetSdrDrawRect(rect);
       REXGPU_INFO(
           "Scene effects trace: draw z {} zw {} zfunc {} blend {}/{}/{} {} x{} at {},{}-{},{}{} "
-          "scene {}",
+          "scene {} vs {:016X} ps {:016X}",
           uint32_t(depth_control.z_enable), uint32_t(depth_control.z_write_enable),
           uint32_t(depth_control.zfunc), uint32_t(blend.color_srcblend),
           uint32_t(blend.color_destblend), uint32_t(blend.color_comb_fcn),
           draw_initiator.source_select == xenos::SourceSelect::kAutoIndex ? "auto" : "indexed",
           uint32_t(draw_initiator.num_indices), rect.left, rect.top, rect.right, rect.bottom,
-          has_rect ? "" : " (outside)", sdr_scene_drawn_ ? 1 : 0);
+          has_rect ? "" : " (outside)", sdr_scene_drawn_ ? 1 : 0, vertex_shader_hash,
+          pixel_shader_hash);
     }
   }
   if (!depth_control.z_enable) {
