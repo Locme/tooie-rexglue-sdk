@@ -373,6 +373,13 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     ImGui::PopID();
   }
 
+  if (EffectHeader("Rim Light", "scene_fx_rim")) {
+    ImGui::PushID("rim");
+    Description("A soft sky-colored glow along silhouettes, as if lit from behind. Before the HUD.");
+    SliderCvar("Strength", "scene_fx_rim_strength", 0.0f, 1.0f);
+    ImGui::PopID();
+  }
+
   if (EffectHeader("Toon Outlines", "scene_fx_toon")) {
     ImGui::PushID("toon");
     Description("Dark cartoon lines along the silhouettes and creases of the scene, before the HUD.");

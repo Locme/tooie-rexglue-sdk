@@ -201,6 +201,11 @@ REXCVAR_DEFINE_BOOL(scene_fx_dof, false, "GPU/Effects",
 REXCVAR_DEFINE_DOUBLE(scene_fx_dof_strength, 0.8, "GPU/Effects",
                       "Cutscene depth of field strength (0...1)")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_rim, false, "GPU/Effects",
+                    "Rim light: a soft sky-colored glow along the silhouettes of an 8-bit scene, "
+                    "as if lit from behind (before the HUD)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_rim_strength, 0.5, "GPU/Effects", "Rim light strength (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_cinematic, false, "GPU/Effects",
                     "Subtle vignette and film grain in letterboxed scenes only (cutscenes, the "
                     "title)") REX_SCENE_FX_LIVE;
@@ -371,6 +376,7 @@ constexpr uint32_t kEffectReflections = 32;
 constexpr uint32_t kEffectBloom = 64;
 constexpr uint32_t kEffectOutlines = 128;
 constexpr uint32_t kEffectDof = 256;
+constexpr uint32_t kEffectRim = 512;
 constexpr int32_t kDebugSplit = 1;
 constexpr uint32_t kCompositeMultiply = 0;
 constexpr uint32_t kCompositeAdd = 1;
@@ -499,7 +505,7 @@ bool SceneEffects::AnySceneEffectEnabled() {
          REXCVAR_GET(scene_fx_contact_shadows) || REXCVAR_GET(scene_fx_reflections) ||
          REXCVAR_GET(scene_fx_volumetrics) || REXCVAR_GET(scene_fx_fog) ||
          REXCVAR_GET(scene_fx_bloom) || REXCVAR_GET(scene_fx_toon) ||
-         REXCVAR_GET(scene_fx_dof);
+         REXCVAR_GET(scene_fx_dof) || REXCVAR_GET(scene_fx_rim);
 }
 
 bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
@@ -1729,6 +1735,16 @@ bool SceneEffects::FillFogConstants() {
   composite_constants_[5][2] = float(REXCVAR_GET(scene_fx_bloom_intensity));
   composite_constants_[5][3] = float(REXCVAR_GET(scene_fx_toon_strength));
   composite_constants_[6][0] = float(REXCVAR_GET(scene_fx_dof_strength));
+  composite_constants_[6][1] = float(REXCVAR_GET(scene_fx_rim_strength));
+  // The 3D's rows (last frame's): the letterbox bars have the sky's depth.
+  composite_constants_[6][2] = 0.0f;
+  composite_constants_[6][3] = float(std::max(int32_t(scene_height_) - 1, 0));
+  if (last_frame_scene_rect_valid_ && last_frame_scene_rect_.bottom > last_frame_scene_rect_.top) {
+    composite_constants_[6][2] = float(std::max(last_frame_scene_rect_.top, 0));
+    composite_constants_[6][3] = float(
+        std::clamp(last_frame_scene_rect_.bottom - 1, last_frame_scene_rect_.top,
+                   std::max(int32_t(scene_height_) - 1, 0)));
+  }
   CameraBasis basis;
   if (!camera_.has_matrix || !GetCameraBasis(camera_.rows, basis)) {
     return false;
@@ -1832,7 +1848,10 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
                            (draw == Draw::kCompositeResolve && REXCVAR_GET(scene_fx_toon)
                                 ? kEffectOutlines
                                 : 0) |
-                           (draw == Draw::kCompositeResolve && dof_computed_ ? kEffectDof : 0);
+                           (draw == Draw::kCompositeResolve && dof_computed_ ? kEffectDof : 0) |
+                           (draw == Draw::kCompositeResolve && REXCVAR_GET(scene_fx_rim)
+                                ? kEffectRim
+                                : 0);
   constants.composite_mode = draw == Draw::kCompositeAdd       ? kCompositeAdd
                              : draw == Draw::kCompositeDebug   ? kCompositeDebug
                              : draw == Draw::kCompositeResolve ? kCompositeResolve
@@ -2041,7 +2060,7 @@ void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rec
   bool multiply = ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_;
   bool add = fog_enabled_ || volumetrics_computed_ || reflections_computed_;
   bool bloom = sdr && REXCVAR_GET(scene_fx_bloom);
-  bool outlines = sdr && REXCVAR_GET(scene_fx_toon);
+  bool outlines = sdr && (REXCVAR_GET(scene_fx_toon) || REXCVAR_GET(scene_fx_rim));
   bool dof = sdr && REXCVAR_GET(scene_fx_dof) && IsLetterboxed(scene_height_);
   bloom_computed_ = false;
   dof_computed_ = false;

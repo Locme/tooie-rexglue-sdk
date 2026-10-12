@@ -8,8 +8,8 @@
 //   lighting (light shafts).
 // - Debug: replaces the color with one effect.
 // - Resolve: both at once on a 16-bit copy of the scene, dithered back to the
-//   8-bit target (scene_fx_16bit), with the bloom, the toon outlines and the
-//   cutscene depth of field.
+//   8-bit target (scene_fx_16bit), with the bloom, the toon outlines, the rim
+//   light and the cutscene depth of field.
 // The fog is exponential height fog integrated analytically per pixel at full
 // resolution (no ray marching), lit by the sky and with a glow toward the sun.
 
@@ -50,7 +50,8 @@ FX_EXTRA_CONSTANTS_BLOCK(12) {
   // x = contact shadow strength, y = reflection intensity, z = bloom intensity,
   // w = toon outline strength.
   float4 fx_effect_strengths;
-  // x = depth of field strength.
+  // x = depth of field strength, y = rim light strength, zw = the rows the
+  // 3D was drawn in on the screen (first, last), for the neighborhoods.
   float4 fx_effect_strengths_2;
 };
 
@@ -106,13 +107,34 @@ float FxDofAmount(float depth) {
   return max(behind, in_front);
 }
 
+// Rim light (0...1): how much of a soft band inside a silhouette - a nearer
+// surface against a farther one or the sky - this pixel is in, as if lit
+// from behind. Two to four pixels wide at 720p.
+float FxRim(int2 pixel, float depth) {
+  int radius = max(1, int(fx_scene_size.y + 180u) / 360);
+  int2 first = int2(0, int(fx_effect_strengths_2.z));
+  int2 last = int2(int(fx_scene_size.x) - 1, int(fx_effect_strengths_2.w));
+  const int2 kDirections[8] = {int2(-1, -1), int2(0, -1), int2(1, -1), int2(-1, 0),
+                               int2(1, 0),   int2(-1, 1), int2(0, 1),  int2(1, 1)};
+  float rim = 0.0;
+  [unroll] for (int i = 0; i < 8; ++i) {
+    [unroll] for (int step = 1; step <= 2; ++step) {
+      float neighbor = fx_depth.Load(
+          int3(clamp(pixel + kDirections[i] * (radius * step), first, last), 0));
+      rim += smoothstep(0.1, 0.3, (neighbor - depth) / max(depth, 1.0e-4));
+    }
+  }
+  return saturate(rim / 6.0);
+}
+
 // Toon outlines (0 = none, 1 = full line): the silhouettes of what is in
 // front of something farther away (or the sky), and creases where the
 // surface bends (inverse depth, linear across a plane, changes slope). About
 // one pixel wide at 720p, wider at higher resolutions.
 float FxOutline(int2 pixel, float depth) {
   int radius = max(1, int(fx_scene_size.y + 360u) / 720);
-  int2 last = int2(fx_scene_size) - 1;
+  int2 first = int2(0, int(fx_effect_strengths_2.z));
+  int2 last = int2(int(fx_scene_size.x) - 1, int(fx_effect_strengths_2.w));
   float inv_depth = 1.0 / max(depth, 1.0e-4);
   const int2 kOffsets[8] = {int2(-1, -1), int2(0, -1), int2(1, -1), int2(-1, 0),
                             int2(1, 0),   int2(-1, 1), int2(0, 1),  int2(1, 1)};
@@ -120,7 +142,7 @@ float FxOutline(int2 pixel, float depth) {
   float neighbors[8];
   [unroll] for (int i = 0; i < 8; ++i) {
     neighbors[i] =
-        fx_depth.Load(int3(clamp(pixel + kOffsets[i] * radius, int2(0, 0), last), 0));
+        fx_depth.Load(int3(clamp(pixel + kOffsets[i] * radius, first, last), 0));
     silhouette = max(silhouette, smoothstep(0.06, 0.15, (neighbors[i] - depth) * inv_depth));
   }
   // Opposite pairs: 0-7, 1-6, 2-5, 3-4.
@@ -309,6 +331,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
       FX_SAMPLE_QUARTER(fx_bloom, screen, glow)
       // Screen blend: glows without clipping the brights.
       lit = 1.0 - (1.0 - saturate(lit)) * (1.0 - saturate(glow * fx_effect_strengths.z));
+    }
+    if ((fx_effect_flags & FX_EFFECT_RIM) && !is_sky) {
+      lit += FxRim(pixel, depth) * fx_effect_strengths_2.y * fx_sky.Load(int3(0, 0, 0)).rgb *
+             (0.5 + 0.5 * saturate(scene));
     }
     if ((fx_effect_flags & FX_EFFECT_OUTLINES) && !is_sky) {
       lit *= 1.0 - fx_effect_strengths.w * FxOutline(pixel, depth);

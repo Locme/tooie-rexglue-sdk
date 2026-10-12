@@ -33,6 +33,7 @@
 #define FX_EFFECT_BLOOM 64u
 #define FX_EFFECT_OUTLINES 128u
 #define FX_EFFECT_DOF 256u
+#define FX_EFFECT_RIM 512u
 // Depth copy: only where the depth copied so far is the sky.
 
 // scene_fx_debug.
