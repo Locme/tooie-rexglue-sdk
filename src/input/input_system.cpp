@@ -48,6 +48,7 @@ X_STATUS InputSystem::Setup() {
 }
 
 void InputSystem::Shutdown() {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   // device_owners_ holds raw driver pointers.
   devices_.clear();
   device_owners_.clear();
@@ -72,6 +73,7 @@ void InputSystem::SetActiveCallback(std::function<bool()> callback) {
 }
 
 void InputSystem::SetDeviceAssignment(std::unique_ptr<DeviceAssignment> assignment) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   assignment_ = std::move(assignment);
   if (assignment_) {
     assignment_->OnDevicesChanged(devices_);
@@ -186,6 +188,7 @@ const DeviceInfo* InputSystem::DeviceInfoFor(DeviceId id) const {
 
 X_RESULT InputSystem::GetCapabilities(uint32_t user_index, uint32_t flags,
                                       X_INPUT_CAPABILITIES* out_caps) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   SCOPE_profile_cpu_f("hid");
   if (!out_caps || !assignment_) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
@@ -213,6 +216,7 @@ X_RESULT InputSystem::GetCapabilities(uint32_t user_index, uint32_t flags,
 }
 
 X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   SCOPE_profile_cpu_f("hid");
   if (!assignment_) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
@@ -252,6 +256,7 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
 }
 
 X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   SCOPE_profile_cpu_f("hid");
   if (!assignment_) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
@@ -294,6 +299,7 @@ X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration
 
 X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
                                    X_INPUT_KEYSTROKE* out_keystroke) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   SCOPE_profile_cpu_f("hid");
   if (!assignment_) {
     return X_ERROR_DEVICE_NOT_CONNECTED;

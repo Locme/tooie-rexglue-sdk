@@ -11,6 +11,7 @@
  */
 
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include <rex/input/device_assignment.h>
@@ -65,6 +66,12 @@ class InputSystem : public system::IInputSystem {
   // does not renumber pad two.
   std::vector<DeviceInfo> devices_;
   std::vector<InputDriver*> device_owners_;
+
+  // The guest polls from its threads while the host UI (a settings window
+  // driven by the pad) polls from the UI thread; RefreshDevices rebuilds
+  // devices_ on every call, so the two raced and crashed. Recursive: an
+  // assignment or driver may call back in.
+  std::recursive_mutex mutex_;
 };
 
 /// Create a default InputSystem with SDL + NOP drivers.
