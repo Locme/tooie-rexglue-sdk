@@ -324,6 +324,15 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (fx_debug_mode == FX_DEBUG_REFLECTIONS) {
     return float4(reflections / (1.0 + reflections), 1.0);
   }
+  if (fx_debug_mode == FX_DEBUG_DEPTH) {
+    // The view distance the effects decoded, on a log scale from 1 (white)
+    // to the sky distance (black); sky (and beyond) blue.
+    if (depth >= fx_sky_distance) {
+      return float4(0.1, 0.2, 0.6, 1.0);
+    }
+    float d = 1.0 - saturate(log2(max(depth, 1.0)) / log2(max(fx_sky_distance, 2.0)));
+    return float4(d, d, d, 1.0);
+  }
   float3 multiplier = (ao * contact + indirect) * fog_transmittance;
   if (resolve) {
     if (fx_effect_flags & FX_EFFECT_DOF) {

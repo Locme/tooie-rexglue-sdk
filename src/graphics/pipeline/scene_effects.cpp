@@ -191,7 +191,7 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_threshold, 0.75, "GPU/Effects",
 REXCVAR_DEFINE_BOOL(scene_fx_toon, false, "GPU/Effects",
                     "Toon outlines: dark lines along the silhouettes and creases of an 8-bit "
                     "scene (before the HUD)") REX_SCENE_FX_LIVE;
-REXCVAR_DEFINE_DOUBLE(scene_fx_toon_strength, 0.8, "GPU/Effects",
+REXCVAR_DEFINE_DOUBLE(scene_fx_toon_strength, 0.6, "GPU/Effects",
                       "Toon outline darkness (0...1)")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_dof, false, "GPU/Effects",
@@ -274,8 +274,9 @@ REXCVAR_DEFINE_BOOL(scene_fx_sdr_scene, false, "GPU/Effects",
 REXCVAR_DEFINE_INT32(scene_fx_debug, 0, "GPU/Effects",
                      "Effects debug view: 0 = off, 1 = effects on the left half of the screen "
                      "only, 2 = ambient occlusion, 3 = volumetric lighting, 4 = global "
-                     "illumination, 5 = fog, 6 = contact shadows, 7 = reflections")
-    .range(0, 7) REX_SCENE_FX_LIVE;
+                     "illumination, 5 = fog, 6 = contact shadows, 7 = reflections, 8 = depth "
+                     "(white near, black far, blue sky)")
+    .range(0, 8) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_trace, false, "GPU/Effects",
                     "Log the effects' decisions for one frame, then reset") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_sprite_depth_write, false, "GPU/Effects",

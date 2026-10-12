@@ -152,10 +152,11 @@ const char* const kDebugViews[] = {"Off",
                                    "Global illumination",
                                    "Fog",
                                    "Contact shadows",
-                                   "Reflections"};
-const int kDebugValues[] = {0, 1, 2, 3, 4, 5, 6, 7};
-const char* const kResolutionScales[] = {"1x (native)", "2x", "3x"};
-const int kResolutionScaleValues[] = {1, 2, 3};
+                                   "Reflections",
+                                   "Depth (white near, black far, blue sky)"};
+const int kDebugValues[] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+const char* const kResolutionScales[] = {"1x (native)", "2x", "3x", "4x"};
+const int kResolutionScaleValues[] = {1, 2, 3, 4};
 const char* const kAnisotropy[] = {"Game's own", "Off", "2x", "4x", "8x", "16x"};
 const int kAnisotropyValues[] = {-1, 0, 2, 3, 4, 5};
 const char* const kColorblindTypes[] = {"Off", "Deuteranopia (green)", "Protanopia (red)",
