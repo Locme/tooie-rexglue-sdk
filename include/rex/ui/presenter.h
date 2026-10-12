@@ -1,4 +1,12 @@
 #pragma once
+
+// CAS and FSR 1 (EASU + RCAS) use shaders built into the SDK, so they are
+// always available; only the temporal FSR 2 / 3 path needs the FidelityFX
+// runtime (REX_HAS_FIDELITYFX_RUNTIME). Defined here so every user of this
+// header sees the same GuestOutputPaintConfig.
+#ifndef REX_HAS_FIDELITYFX_SDK
+#define REX_HAS_FIDELITYFX_SDK 1
+#endif
 /**
  ******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
