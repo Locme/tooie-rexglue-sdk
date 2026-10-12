@@ -12,6 +12,7 @@
 
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include <rex/input/device_assignment.h>
@@ -37,6 +38,9 @@ class InputSystem : public system::IInputSystem {
   void Shutdown() override;
 
   void AddDriver(std::unique_ptr<InputDriver> driver);
+  /// A pad driver that only enumerates while the input_backend cvar names
+  /// `backend` ("sdl", "xinput"), so the backend can change while running.
+  void AddDriver(std::unique_ptr<InputDriver> driver, std::string backend);
   void AttachWindow(rex::ui::Window* window);
   void SetActiveCallback(std::function<bool()> callback);
 
@@ -58,6 +62,7 @@ class InputSystem : public system::IInputSystem {
   rex::ui::Window* window_ = nullptr;
 
   std::vector<std::unique_ptr<InputDriver>> drivers_;
+  std::vector<std::string> driver_backends_;  // parallel to drivers_, "" = always
 
   std::unique_ptr<DeviceAssignment> assignment_;
   ActiveDeviceTracker active_devices_;

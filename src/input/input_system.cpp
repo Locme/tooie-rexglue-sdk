@@ -53,10 +53,16 @@ void InputSystem::Shutdown() {
   devices_.clear();
   device_owners_.clear();
   drivers_.clear();
+  driver_backends_.clear();
 }
 
 void InputSystem::AddDriver(std::unique_ptr<InputDriver> driver) {
+  AddDriver(std::move(driver), {});
+}
+
+void InputSystem::AddDriver(std::unique_ptr<InputDriver> driver, std::string backend) {
   drivers_.push_back(std::move(driver));
+  driver_backends_.push_back(std::move(backend));
 }
 
 void InputSystem::AttachWindow(rex::ui::Window* window) {
@@ -84,9 +90,17 @@ void InputSystem::RefreshDevices() {
   std::vector<DeviceInfo> seen;
   std::vector<InputDriver*> owners;
   std::vector<DeviceInfo> enumerated;
-  for (auto& driver : drivers_) {
+  // Pads of a backend other than input_backend's drop out (and the chosen
+  // one's come in) at the next refresh: the backend switches while running.
+  const std::string backend = REXCVAR_GET(input_backend);
+  for (size_t d = 0; d < drivers_.size(); d++) {
+    auto& driver = drivers_[d];
     enumerated.clear();
+    // Still enumerated when off, so its own event queue keeps draining.
     driver->EnumerateDevices(enumerated);
+    if (!driver_backends_[d].empty() && driver_backends_[d] != backend) {
+      continue;
+    }
     for (auto& info : enumerated) {
       seen.push_back(info);
       owners.push_back(driver.get());
@@ -331,20 +345,18 @@ std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
   auto input = std::make_unique<InputSystem>(nullptr);
 
   if (!tool_mode) {
+    // Both pad drivers are set up; only the one input_backend names hands
+    // out pads, so changing it takes effect at once.
 #if REX_PLATFORM_WIN32
-    if (REXCVAR_GET(input_backend) == "xinput") {
-      auto xinput_driver = std::make_unique<xinput::XinputInputDriver>(nullptr, 0);
-      if (xinput_driver->Setup() == X_STATUS_SUCCESS) {
-        input->AddDriver(std::move(xinput_driver));
-      }
+    auto xinput_driver = std::make_unique<xinput::XinputInputDriver>(nullptr, 0);
+    if (xinput_driver->Setup() == X_STATUS_SUCCESS) {
+      input->AddDriver(std::move(xinput_driver), "xinput");
     }
 #endif
 
-    if (REXCVAR_GET(input_backend) == "sdl") {
-      auto sdl_driver = std::make_unique<sdl::SDLInputDriver>(nullptr, 0);
-      if (sdl_driver->Setup() == X_STATUS_SUCCESS) {
-        input->AddDriver(std::move(sdl_driver));
-      }
+    auto sdl_driver = std::make_unique<sdl::SDLInputDriver>(nullptr, 0);
+    if (sdl_driver->Setup() == X_STATUS_SUCCESS) {
+      input->AddDriver(std::move(sdl_driver), "sdl");
     }
 
     // MnK driver (keyboard/mouse -> controller emulation)
