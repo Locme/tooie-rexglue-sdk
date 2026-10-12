@@ -8,7 +8,7 @@
 //   lighting (light shafts).
 // - Debug: replaces the color with one effect.
 // - Resolve: both at once on a 16-bit copy of the scene, dithered back to the
-//   8-bit target (scene_fx_16bit).
+//   8-bit target (scene_fx_16bit), with the bloom and the toon outlines.
 // The fog is exponential height fog integrated analytically per pixel at full
 // resolution (no ray marching), lit by the sky and with a glow toward the sun.
 
@@ -44,7 +44,8 @@ FX_EXTRA_CONSTANTS_BLOCK(11) {
   float4 fx_fog_sun;
   // rgb = sunlight scattered by the fog relative to the sky's color.
   float4 fx_fog_sun_color;
-  // x = contact shadow strength, y = reflection intensity, z = bloom intensity.
+  // x = contact shadow strength, y = reflection intensity, z = bloom intensity,
+  // w = toon outline strength.
   float4 fx_effect_strengths;
 };
 
@@ -60,6 +61,33 @@ FX_EXTRA_CONSTANTS_BLOCK(11) {
     }                                                                 \
     result *= inv_weight_sum;                                         \
   }
+
+// Toon outlines (0 = none, 1 = full line): the silhouettes of what is in
+// front of something farther away (or the sky), and creases where the
+// surface bends (inverse depth, linear across a plane, changes slope). About
+// one pixel wide at 720p, wider at higher resolutions.
+float FxOutline(int2 pixel, float depth) {
+  int radius = max(1, int(fx_scene_size.y + 360u) / 720);
+  int2 last = int2(fx_scene_size) - 1;
+  float inv_depth = 1.0 / max(depth, 1.0e-4);
+  const int2 kOffsets[8] = {int2(-1, -1), int2(0, -1), int2(1, -1), int2(-1, 0),
+                            int2(1, 0),   int2(-1, 1), int2(0, 1),  int2(1, 1)};
+  float silhouette = 0.0;
+  float neighbors[8];
+  [unroll] for (int i = 0; i < 8; ++i) {
+    neighbors[i] =
+        fx_depth.Load(int3(clamp(pixel + kOffsets[i] * radius, int2(0, 0), last), 0));
+    silhouette = max(silhouette, smoothstep(0.06, 0.15, (neighbors[i] - depth) * inv_depth));
+  }
+  // Opposite pairs: 0-7, 1-6, 2-5, 3-4.
+  float crease = 0.0;
+  [unroll] for (int j = 0; j < 4; ++j) {
+    float a = 1.0 / max(neighbors[j], 1.0e-4);
+    float b = 1.0 / max(neighbors[7 - j], 1.0e-4);
+    crease = max(crease, abs(a + b - 2.0 * inv_depth) / inv_depth);
+  }
+  return max(silhouette, smoothstep(0.03, 0.08, crease));
+}
 
 // Jimenez et al. 2016: visibility to occlusion including interreflections.
 float FxMultiBounce(float visibility, float albedo) {
@@ -226,6 +254,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   float3 multiplier = (ao * contact + indirect) * fog_transmittance;
   if (resolve) {
+    float3 lit = scene * multiplier + added;
     if (fx_effect_flags & FX_EFFECT_BLOOM) {
       // Bilinear between the quarter-resolution texels.
       int2 bloom_size = int2((fx_scene_size + 3u) >> 2);
@@ -238,11 +267,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
       float3 b11 = fx_bloom.Load(int3(clamp(bloom_base + int2(1, 1), 0, bloom_size - 1), 0)).rgb;
       float3 glow = lerp(lerp(b00, b10, f.x), lerp(b01, b11, f.x), f.y);
       // Screen blend: glows without clipping the brights.
-      float3 lit = scene * multiplier + added;
       lit = 1.0 - (1.0 - saturate(lit)) * (1.0 - saturate(glow * fx_effect_strengths.z));
-      return float4(saturate(lit + FxDither8(position.xy)), 1.0);
     }
-    return float4(saturate(scene * multiplier + added + FxDither8(position.xy)), 1.0);
+    if ((fx_effect_flags & FX_EFFECT_OUTLINES) && !is_sky) {
+      lit *= 1.0 - fx_effect_strengths.w * FxOutline(pixel, depth);
+    }
+    return float4(saturate(lit + FxDither8(position.xy)), 1.0);
   }
   return float4(multiplier, 1.0);
 }

@@ -188,6 +188,12 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_intensity, 0.25, "GPU/Effects", "Bloom stre
 REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_threshold, 0.75, "GPU/Effects",
                       "Brightness (0...1) above which the scene glows")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_toon, false, "GPU/Effects",
+                    "Toon outlines: dark lines along the silhouettes and creases of an 8-bit "
+                    "scene (before the HUD)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_toon_strength, 0.8, "GPU/Effects",
+                      "Toon outline darkness (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_cinematic, false, "GPU/Effects",
                     "Subtle vignette and film grain in letterboxed scenes only (cutscenes, the "
                     "title)") REX_SCENE_FX_LIVE;
@@ -356,6 +362,7 @@ constexpr uint32_t kEffectFog = 8;
 constexpr uint32_t kEffectContactShadows = 16;
 constexpr uint32_t kEffectReflections = 32;
 constexpr uint32_t kEffectBloom = 64;
+constexpr uint32_t kEffectOutlines = 128;
 constexpr int32_t kDebugSplit = 1;
 constexpr uint32_t kCompositeMultiply = 0;
 constexpr uint32_t kCompositeAdd = 1;
@@ -481,7 +488,7 @@ bool SceneEffects::AnySceneEffectEnabled() {
   return REXCVAR_GET(scene_fx_ao) || REXCVAR_GET(scene_fx_gi) ||
          REXCVAR_GET(scene_fx_contact_shadows) || REXCVAR_GET(scene_fx_reflections) ||
          REXCVAR_GET(scene_fx_volumetrics) || REXCVAR_GET(scene_fx_fog) ||
-         REXCVAR_GET(scene_fx_bloom);
+         REXCVAR_GET(scene_fx_bloom) || REXCVAR_GET(scene_fx_toon);
 }
 
 bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
@@ -1707,6 +1714,7 @@ bool SceneEffects::FillFogConstants() {
   composite_constants_[5][0] = float(REXCVAR_GET(scene_fx_contact_shadows_strength));
   composite_constants_[5][1] = float(REXCVAR_GET(scene_fx_reflections_intensity));
   composite_constants_[5][2] = float(REXCVAR_GET(scene_fx_bloom_intensity));
+  composite_constants_[5][3] = float(REXCVAR_GET(scene_fx_toon_strength));
   CameraBasis basis;
   if (!camera_.has_matrix || !GetCameraBasis(camera_.rows, basis)) {
     return false;
@@ -1806,7 +1814,10 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
                            (fog_enabled_ ? kEffectFog : 0) |
                            (contact_shadows_computed_ ? kEffectContactShadows : 0) |
                            (reflections_computed_ ? kEffectReflections : 0) |
-                           (draw == Draw::kCompositeResolve && bloom_computed_ ? kEffectBloom : 0);
+                           (draw == Draw::kCompositeResolve && bloom_computed_ ? kEffectBloom : 0) |
+                           (draw == Draw::kCompositeResolve && REXCVAR_GET(scene_fx_toon)
+                                ? kEffectOutlines
+                                : 0);
   constants.composite_mode = draw == Draw::kCompositeAdd       ? kCompositeAdd
                              : draw == Draw::kCompositeDebug   ? kCompositeDebug
                              : draw == Draw::kCompositeResolve ? kCompositeResolve
@@ -1982,11 +1993,12 @@ void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rec
   bool multiply = ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_;
   bool add = fog_enabled_ || volumetrics_computed_ || reflections_computed_;
   bool bloom = sdr && REXCVAR_GET(scene_fx_bloom);
+  bool outlines = sdr && REXCVAR_GET(scene_fx_toon);
   bloom_computed_ = false;
-  if (!multiply && !add && !bloom) {
+  if (!multiply && !add && !bloom && !outlines) {
     return;
   }
-  if (sdr && (REXCVAR_GET(scene_fx_16bit) || bloom) &&
+  if (sdr && (REXCVAR_GET(scene_fx_16bit) || bloom || outlines) &&
       EnsureImageTexture(Texture::kFinalImage, uint32_t(rect.right), uint32_t(rect.bottom))) {
     // The tile copied at 16 bits, the effects applied to it in one pass and
     // dithered back: one 8-bit rounding instead of one per blend.
