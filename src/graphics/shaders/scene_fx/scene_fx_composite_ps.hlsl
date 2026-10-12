@@ -8,7 +8,8 @@
 //   lighting (light shafts).
 // - Debug: replaces the color with one effect.
 // - Resolve: both at once on a 16-bit copy of the scene, dithered back to the
-//   8-bit target (scene_fx_16bit), with the bloom and the toon outlines.
+//   8-bit target (scene_fx_16bit), with the bloom, the toon outlines and the
+//   cutscene depth of field.
 // The fog is exponential height fog integrated analytically per pixel at full
 // resolution (no ray marching), lit by the sky and with a glow toward the sun.
 
@@ -32,7 +33,9 @@ FX_BINDING(8) Texture2D<float4> fx_reflections : register(t8);
 FX_BINDING(9) Texture2D<float4> fx_scene_image : register(t9);
 // Resolve: the bloom, at a quarter of the screen's resolution.
 FX_BINDING(10) Texture2D<float4> fx_bloom : register(t10);
-FX_EXTRA_CONSTANTS_BLOCK(11) {
+// The resolve's depth of field: the scene blurred the same way.
+FX_BINDING(11) Texture2D<float4> fx_dof : register(t11);
+FX_EXTRA_CONSTANTS_BLOCK(12) {
   // xyz = view space direction to world height, w = the camera's height.
   float4 fx_fog_height;
   // Density: x = at height y (world), z = falloff with height, w = everywhere.
@@ -47,6 +50,8 @@ FX_EXTRA_CONSTANTS_BLOCK(11) {
   // x = contact shadow strength, y = reflection intensity, z = bloom intensity,
   // w = toon outline strength.
   float4 fx_effect_strengths;
+  // x = depth of field strength.
+  float4 fx_effect_strengths_2;
 };
 
 // An effect at fx_effect_scale at this pixel: the pixel itself at full
@@ -61,6 +66,45 @@ FX_EXTRA_CONSTANTS_BLOCK(11) {
     }                                                                 \
     result *= inv_weight_sum;                                         \
   }
+
+// A quarter-resolution screen space texture at a scene pixel, bilinearly.
+#define FX_SAMPLE_QUARTER(texture, screen, result)                                   \
+  {                                                                                  \
+    int2 quarter_size = int2((fx_scene_size + 3u) >> 2);                             \
+    float2 quarter_position = (screen) * 0.25 - 0.5;                                 \
+    int2 quarter_base = int2(floor(quarter_position));                               \
+    float2 f = quarter_position - float2(quarter_base);                              \
+    float3 q00 = texture.Load(int3(clamp(quarter_base, 0, quarter_size - 1), 0)).rgb; \
+    float3 q10 =                                                                     \
+        texture.Load(int3(clamp(quarter_base + int2(1, 0), 0, quarter_size - 1), 0)).rgb; \
+    float3 q01 =                                                                     \
+        texture.Load(int3(clamp(quarter_base + int2(0, 1), 0, quarter_size - 1), 0)).rgb; \
+    float3 q11 =                                                                     \
+        texture.Load(int3(clamp(quarter_base + int2(1, 1), 0, quarter_size - 1), 0)).rgb; \
+    result = lerp(lerp(q00, q10, f.x), lerp(q01, q11, f.x), f.y);                    \
+  }
+
+// How blurred a pixel at depth is (0...1) with the focus on what is nearest
+// around the screen's center (nothing there but the sky: no blur). Sharp
+// within a quarter of the focus distance, fully blurred at double it (or at
+// half of it in front).
+float FxDofAmount(float depth) {
+  int2 center = int2(fx_scene_size >> 1);
+  int2 spread = int2(fx_scene_size / 10u);
+  float focus = fx_sky_distance;
+  [unroll] for (int i = 0; i < 5; ++i) {
+    int2 offset = i == 0 ? int2(0, 0)
+                         : int2(i == 1 ? -1 : (i == 2 ? 1 : 0), i == 3 ? -1 : (i == 4 ? 1 : 0));
+    focus = min(focus, fx_depth.Load(int3(center + offset * spread, 0)));
+  }
+  if (focus >= fx_sky_distance) {
+    return 0.0;
+  }
+  float relative = depth / focus;
+  float behind = smoothstep(1.25, 2.0, relative);
+  float in_front = 1.0 - smoothstep(0.5, 0.8, relative);
+  return max(behind, in_front);
+}
 
 // Toon outlines (0 = none, 1 = full line): the silhouettes of what is in
 // front of something farther away (or the sky), and creases where the
@@ -254,18 +298,15 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   float3 multiplier = (ao * contact + indirect) * fog_transmittance;
   if (resolve) {
+    if (fx_effect_flags & FX_EFFECT_DOF) {
+      float3 blurred;
+      FX_SAMPLE_QUARTER(fx_dof, screen, blurred)
+      scene = lerp(scene, blurred, FxDofAmount(depth) * fx_effect_strengths_2.x);
+    }
     float3 lit = scene * multiplier + added;
     if (fx_effect_flags & FX_EFFECT_BLOOM) {
-      // Bilinear between the quarter-resolution texels.
-      int2 bloom_size = int2((fx_scene_size + 3u) >> 2);
-      float2 bloom_position = screen * 0.25 - 0.5;
-      int2 bloom_base = int2(floor(bloom_position));
-      float2 f = bloom_position - float2(bloom_base);
-      float3 b00 = fx_bloom.Load(int3(clamp(bloom_base, 0, bloom_size - 1), 0)).rgb;
-      float3 b10 = fx_bloom.Load(int3(clamp(bloom_base + int2(1, 0), 0, bloom_size - 1), 0)).rgb;
-      float3 b01 = fx_bloom.Load(int3(clamp(bloom_base + int2(0, 1), 0, bloom_size - 1), 0)).rgb;
-      float3 b11 = fx_bloom.Load(int3(clamp(bloom_base + int2(1, 1), 0, bloom_size - 1), 0)).rgb;
-      float3 glow = lerp(lerp(b00, b10, f.x), lerp(b01, b11, f.x), f.y);
+      float3 glow;
+      FX_SAMPLE_QUARTER(fx_bloom, screen, glow)
       // Screen blend: glows without clipping the brights.
       lit = 1.0 - (1.0 - saturate(lit)) * (1.0 - saturate(glow * fx_effect_strengths.z));
     }

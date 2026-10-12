@@ -364,6 +364,22 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     ImGui::PopID();
   }
 
+  if (EffectHeader("Cutscene Depth of Field", "scene_fx_dof")) {
+    ImGui::PushID("dof");
+    Description(
+        "While the picture is letterboxed, what is far behind (or well in front of) the "
+        "nearest thing at the screen's center blurs. Before the HUD.");
+    SliderCvar("Strength", "scene_fx_dof_strength", 0.0f, 1.0f);
+    ImGui::PopID();
+  }
+
+  if (EffectHeader("Toon Outlines", "scene_fx_toon")) {
+    ImGui::PushID("toon");
+    Description("Dark cartoon lines along the silhouettes and creases of the scene, before the HUD.");
+    SliderCvar("Darkness", "scene_fx_toon_strength", 0.0f, 1.0f);
+    ImGui::PopID();
+  }
+
   if (EffectHeader("16-bit Effects", "scene_fx_16bit")) {
     ImGui::PushID("16bit");
     Description(

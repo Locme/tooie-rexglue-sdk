@@ -99,6 +99,10 @@ class SceneEffects {
     kBloomBright,
     kBloomBlur,
     kBloom,
+    // The cutscene depth of field's blurred scene, the same way (kBloomBlur
+    // shared for the horizontal pass).
+    kDofBright,
+    kDof,
 
     kCount,
   };
@@ -199,7 +203,7 @@ class SceneEffects {
 
   static constexpr uint32_t kMaxSources = 8;
   static constexpr uint32_t kMaxTargets = 4;
-  static constexpr uint32_t kDrawSourceCount = 11;
+  static constexpr uint32_t kDrawSourceCount = 12;
   static constexpr uint32_t kViewDepthMipCount = 4;
   static constexpr uint32_t kMaxShadowCascades = 2;
   // FxConstants: 32 dwords - also the minimum guaranteed Vulkan push constant
@@ -383,6 +387,7 @@ class SceneEffects {
     kVolumetrics,
     kComposite,
     kBloom,
+    kDof,
     kSmaa,
     kImage,
 
@@ -422,6 +427,13 @@ class SceneEffects {
   bool ClipToSceneDraws(Rect& rect) const;
   // The bloom of the tile in kFinalImage (its 16-bit copy) into kBloom.
   bool ComputeBloom(const Rect& rect, int32_t screen_offset_x, int32_t screen_offset_y);
+  // A quarter-resolution blur of the tile in kFinalImage, of what is above
+  // threshold (0 = all of it), kept in bright (screen space) and blurred
+  // into result.
+  bool ComputeSceneBlur(const Rect& rect, int32_t screen_offset_x, int32_t screen_offset_y,
+                        float threshold, Texture bright, Texture result);
+  // Whether last frame's 3D was letterboxed (cutscenes, the title).
+  bool IsLetterboxed(uint32_t screen_height) const;
   bool EnsureImageTexture(Texture texture, uint32_t width, uint32_t height);
   bool ApplySmaa(const void* constants, const Rect& rect, uint32_t width,
                  uint32_t height);
@@ -449,6 +461,7 @@ class SceneEffects {
   // What was computed for the current frame, and at which resolution.
   bool smaa_tables_written_ = false;
   bool bloom_computed_ = false;
+  bool dof_computed_ = false;
   // Size of the final image's textures (kFinalImage, the SMAA ones), the
   // largest asked for.
   uint32_t image_width_ = 0;
@@ -464,7 +477,7 @@ class SceneEffects {
   Texture volumetric_result_ = Texture::kVolumetric;
   // The composite's extra constants for this frame (the fog's, and the
   // effects' strengths).
-  float composite_constants_[6][4] = {};
+  float composite_constants_[7][4] = {};
 
   Camera camera_ = {};
   bool camera_logged_ = false;

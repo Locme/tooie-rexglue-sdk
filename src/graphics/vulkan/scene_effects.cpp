@@ -91,7 +91,7 @@ const ShaderCode kComputeShaders[] = {
 #undef REX_SCENE_FX_SHADER
 
 // Sources of the draws' pixel shaders, then their constant buffer.
-constexpr uint32_t kCompositeSourceCount = 11;
+constexpr uint32_t kCompositeSourceCount = 12;
 constexpr uint32_t kImageSourceCount = 1;
 // Descriptor sets per pool.
 constexpr uint32_t kDescriptorPoolSets = 128;

@@ -8,7 +8,9 @@
 //   scene's 16-bit copy); each thread averages a 4x4 block and keeps what is
 //   above the threshold (with a soft knee), written at screen / 4.
 // - Otherwise (blur): a separable Gaussian along fx_blur_direction over
-//   fx_pass_rect (quarter-resolution screen texels).
+//   fx_pass_rect (quarter-resolution screen texels), the taps within
+//   fx_blur_clamp (the 3D's area). Also the cutscene depth of field's blur
+//   of the whole scene (threshold 0).
 
 #include "scene_fx_common.hlsli"
 
@@ -48,7 +50,11 @@ void main(uint3 id : SV_DispatchThreadID) {
 #else  // blur
 
 FX_BINDING(0) Texture2D<float4> fx_source : register(t0);
-FX_BINDING(1) FX_FORMAT_RGBA16F RWTexture2D<float4> fx_dest : register(u0);
+FX_EXTRA_CONSTANTS_BLOCK(1) {
+  // The texels the taps stay within: xy = first, zw = last.
+  int4 fx_blur_clamp;
+};
+FX_BINDING(2) FX_FORMAT_RGBA16F RWTexture2D<float4> fx_dest : register(u0);
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
@@ -56,14 +62,13 @@ void main(uint3 id : SV_DispatchThreadID) {
   if (any(texel >= int2(fx_pass_rect.zw))) {
     return;
   }
-  int2 size = int2((fx_scene_size + 3u) >> 2);
   int2 axis = int2(fx_blur_direction);
   // Sigma 4 texels (16 screen pixels), 12 texels each way.
   float4 sum = 0.0;
   float weight_sum = 0.0;
   [unroll] for (int i = -12; i <= 12; ++i) {
     float weight = exp(-float(i * i) / 32.0);
-    int2 tap = clamp(texel + axis * i, int2(0, 0), size - 1);
+    int2 tap = clamp(texel + axis * i, fx_blur_clamp.xy, fx_blur_clamp.zw);
     sum += fx_source.Load(int3(tap, 0)) * weight;
     weight_sum += weight;
   }
