@@ -183,9 +183,9 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_colorblind_strength, 1.0, "GPU/Effects",
 REXCVAR_DEFINE_BOOL(scene_fx_bloom, false, "GPU/Effects",
                     "Subtle bloom: a soft glow around the brightest parts of an 8-bit scene "
                     "(before the HUD)") REX_SCENE_FX_LIVE;
-REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_intensity, 0.25, "GPU/Effects", "Bloom strength")
+REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_intensity, 0.8, "GPU/Effects", "Bloom strength")
     .range(0.0, 2.0) REX_SCENE_FX_LIVE;
-REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_threshold, 0.75, "GPU/Effects",
+REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_threshold, 0.5, "GPU/Effects",
                       "Brightness (0...1) above which the scene glows")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_toon, false, "GPU/Effects",
