@@ -232,6 +232,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
     float3 direction = normalize(FxViewPosition(screen, 1.0));
     float distance = is_sky ? fx_fog_color.w : depth / direction.z;
     fog_transmittance = exp(-FxFogOpticalDepth(direction, distance));
+    // The sky only hazes over: thick fog along a long ray (a level high
+    // above the fog's height, Cloud Cuckooland) otherwise replaced it with
+    // the fog's color.
+    if (is_sky) {
+      fog_transmittance = max(fog_transmittance, 0.7);
+    }
     float g = fx_fog_sun.w;
     float phase = (1.0 - g * g) /
                   pow(max(1.0 + g * g - 2.0 * g * dot(direction, fx_fog_sun.xyz), 1.0e-4), 1.5);
