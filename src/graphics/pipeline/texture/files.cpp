@@ -91,7 +91,7 @@ std::string FileStem(const Description& key, uint64_t hash) {
 }
 
 bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& stem,
-                   const uint8_t* guest_base, const Description& key) {
+                   const uint8_t* guest_base, const Description& key, uint32_t swizzle) {
   if (key.dimension != xenos::DataDimension::k2DOrStacked || key.depth_or_array_size != 1) {
     return false;
   }
@@ -126,6 +126,9 @@ bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& st
     }
   }
   SwapGuest16BitChannelsToFileOrder(key.format, pixels.data(), pixels.size());
+  if (dxgi_format == kFileFormatR8G8B8A8Unorm) {
+    SwizzleRGBA8ToFileOrder(pixels.data(), pixels.size(), swizzle);
+  }
 
   // DDS: magic, 124-byte header, 20-byte DX10 header, the base level.
   std::vector<uint8_t> file;
@@ -175,6 +178,47 @@ bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& st
 }
 
 FileFormat FileFormatFor(xenos::TextureFormat format) { return FileFormatForImpl(format); }
+
+namespace {
+// The swizzle's four source channels when it reorders all four, else false.
+bool SwizzlePermutation(uint32_t swizzle, uint32_t source[4]) {
+  uint32_t seen = 0;
+  for (uint32_t c = 0; c < 4; ++c) {
+    source[c] = (swizzle >> (3 * c)) & 0b111;
+    if (source[c] > 3 || (seen & (1u << source[c]))) {
+      return false;
+    }
+    seen |= 1u << source[c];
+  }
+  return true;
+}
+}  // namespace
+
+void SwizzleRGBA8ToFileOrder(uint8_t* data, size_t size, uint32_t swizzle) {
+  uint32_t source[4];
+  if (swizzle == kIdentitySwizzle || !SwizzlePermutation(swizzle, source)) {
+    return;
+  }
+  for (size_t i = 0; i + 3 < size; i += 4) {
+    const uint8_t in[4] = {data[i], data[i + 1], data[i + 2], data[i + 3]};
+    for (uint32_t c = 0; c < 4; ++c) {
+      data[i + c] = in[source[c]];
+    }
+  }
+}
+
+void SwizzleRGBA8FromFileOrder(uint8_t* data, size_t size, uint32_t swizzle) {
+  uint32_t source[4];
+  if (swizzle == kIdentitySwizzle || !SwizzlePermutation(swizzle, source)) {
+    return;
+  }
+  for (size_t i = 0; i + 3 < size; i += 4) {
+    const uint8_t in[4] = {data[i], data[i + 1], data[i + 2], data[i + 3]};
+    for (uint32_t c = 0; c < 4; ++c) {
+      data[i + source[c]] = in[c];
+    }
+  }
+}
 
 void SwapGuest16BitChannelsToFileOrder(xenos::TextureFormat format, uint8_t* data, size_t size) {
   // The same swaps as the texture_load_r5g6b5_b5g6r5, r5g5b5a1_b5g5r5a1 and

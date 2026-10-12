@@ -474,7 +474,8 @@ void TextureCache::DumpTextureIfRequested(const Texture& texture) {
   if (std::filesystem::exists(directory / (stem + ".dds"), error)) {
     return;
   }
-  if (texture_files::DumpBaseLevel(directory, stem, guest_base, description)) {
+  if (texture_files::DumpBaseLevel(directory, stem, guest_base, description,
+                                  texture.file_swizzle())) {
     REXGPU_INFO("Texture dump: {}.dds (guest base 0x{:08X}, {} bytes)", stem, key.base_page << 12,
                 guest_base_size);
   } else {
@@ -532,6 +533,11 @@ std::shared_ptr<const texture_files::Replacement> TextureCache::FindReplacement(
   }
   if (replacement) {
     replacement->guest_hash = hash;
+    if (replacement->format == texture_files::kFileFormatR8G8B8A8Unorm &&
+        guest_file_format == texture_files::kFileFormatR8G8B8A8Unorm) {
+      texture_files::SwizzleRGBA8FromFileOrder(replacement->data.data(),
+                                               replacement->data.size(), creating_swizzle_);
+    }
   }
   replacements_.emplace(hash, replacement);
   return replacement;
@@ -652,6 +658,7 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     }
     uint32_t old_host_swizzle = binding.host_swizzle;
     binding.host_swizzle = GuestToHostSwizzle(fetch.swizzle, GetHostFormatSwizzle(binding.key));
+    creating_swizzle_ = fetch.swizzle;
 
     // Check if need to load the unsigned and the signed versions of the texture
     // (if the format is emulated with different host bit representations for
@@ -708,6 +715,7 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
       queue_pending_texture_load(binding.texture_signed);
     }
   }
+  creating_swizzle_ = texture_files::kIdentitySwizzle;
 
   COUNT_profile_set("gpu/texture_cache/request_textures_pending_load_count",
                     uint32_t(pending_texture_loads.size()));
@@ -789,6 +797,7 @@ TextureCache::Texture::Texture(TextureCache& texture_cache, const TextureKey& ke
       key_(key),
       guest_layout_(key.GetGuestLayout()),
       replacement_(texture_cache.creating_replacement_),
+      file_swizzle_(texture_cache.creating_swizzle_),
       last_usage_submission_index_(texture_cache.current_submission_index_),
       last_usage_time_(texture_cache.current_submission_time_),
       used_previous_(track_usage ? texture_cache.texture_used_last_ : nullptr),

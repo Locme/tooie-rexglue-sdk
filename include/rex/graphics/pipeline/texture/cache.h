@@ -221,6 +221,9 @@ class TextureCache {
     // any. The host texture then has the replacement's size, format and mip
     // count, and the loads upload the replacement instead of untiling.
     const texture_files::Replacement* replacement() const { return replacement_.get(); }
+    // The fetch constant swizzle the texture was first bound with (8_8_8_8
+    // dumps and replacement files are in that channel order).
+    uint32_t file_swizzle() const { return file_swizzle_; }
 
     uint64_t last_usage_submission_index() const { return last_usage_submission_index_; }
     uint64_t last_usage_time() const { return last_usage_time_; }
@@ -263,6 +266,7 @@ class TextureCache {
     texture_util::TextureGuestLayout guest_layout_;
 
     std::shared_ptr<const texture_files::Replacement> replacement_;
+    uint32_t file_swizzle_;
 
     uint64_t host_memory_usage_ = 0;
 
@@ -615,6 +619,8 @@ class TextureCache {
   // Set around the CreateTexture call for the Texture constructor to pick up.
   std::shared_ptr<const texture_files::Replacement> creating_replacement_;
   std::string creating_replacement_stem_;
+  // The fetch constant swizzle of the binding a texture is being created for.
+  uint32_t creating_swizzle_ = texture_files::kIdentitySwizzle;
   uint32_t draw_resolution_scale_x_;
   uint32_t draw_resolution_scale_y_;
 

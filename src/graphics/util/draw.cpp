@@ -28,6 +28,8 @@
 #include <rex/ui/graphics_util.h>
 
 REXCVAR_DEFINE_BOOL(half_pixel_offset, true, "GPU", "Enable half pixel offset");
+REXCVAR_DEFINE_BOOL(screen_space_draws_trace, false, "GPU",
+                    "Log why each draw of one frame in 120 is or isn't narrowed as screen-space 2D");
 
 REXCVAR_DEFINE_BOOL(resolve_resolution_scale_fill_half_pixel_offset, true, "GPU",
                     "Fill half pixel offset during resolution scale resolve");
@@ -549,48 +551,95 @@ void ApplyScreenSpaceDrawScale(const RegisterFile& regs, const memory::Memory& m
     phase_window_offset = window_offset;
     after_scene = false;
   }
-  bool auto_index =
-      regs.Get<reg::VGT_DRAW_INITIATOR>().source_select == xenos::SourceSelect::kAutoIndex;
+  auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
+  bool auto_index = vgt_draw_initiator.source_select == xenos::SourceSelect::kAutoIndex;
   auto depth_control = regs.Get<reg::RB_DEPTHCONTROL>();
+  // screen_space_draws_trace: why each draw of one frame in 120 is or isn't
+  // narrowed.
+  const bool trace = REXCVAR_GET(screen_space_draws_trace) && frame % 120 == 0;
+  auto skip = [&](const char* why) {
+    if (trace) {
+      REXGPU_INFO("screen-space draws: frame {} draw of {} {}indices, z {}{}: {}", frame,
+                  index_count, auto_index ? "auto " : "", bool(depth_control.z_enable),
+                  depth_control.z_write_enable ? " write" : "", why);
+    }
+  };
   if (depth_control.z_enable && depth_control.z_write_enable) {
     // Except a depth-writing full-screen rectangle: a clear, not the scene.
     if (!auto_index || index_count > 4) {
       after_scene = true;
     }
-    return;
+    return skip("depth-writing");
   }
   // HUD elements are small quads; the cap bounds the cost of the check.
   constexpr uint32_t kMaxVertices = 1024;
-  if (!after_scene || !auto_index || !index_count || index_count > kMaxVertices) {
-    return;
+  if (!after_scene) {
+    return skip("before the scene");
+  }
+  if (!index_count || index_count > kMaxVertices) {
+    return skip("too many vertices");
+  }
+  if (!auto_index && vgt_draw_initiator.source_select != xenos::SourceSelect::kDMA) {
+    return skip("immediate indices");
   }
   const auto& bindings = vertex_shader.vertex_bindings();
   if (bindings.empty() || bindings[0].attributes.empty()) {
-    return;
+    return skip("no vertex binding");
   }
   const Shader::VertexBinding& binding = bindings[0];
   const auto& position = binding.attributes[0].fetch_instr.attributes;
   if (position.data_format != xenos::VertexFormat::k_32_32_32_32_FLOAT || position.offset != 0 ||
       binding.stride_words < 4) {
-    return;
+    return skip("position not float4");
   }
   xenos::xe_gpu_vertex_fetch_t fetch = regs.GetVertexFetch(binding.fetch_constant);
   if (fetch.type != xenos::FetchConstantType::kVertex) {
-    return;
+    return skip("not a vertex fetch");
   }
-  uint32_t first = regs.Get<reg::VGT_INDX_OFFSET>().indx_offset;
-  if (uint64_t(first + index_count) * binding.stride_words > fetch.size) {
-    return;
-  }
-  const uint32_t* vertices = memory.TranslatePhysical<const uint32_t*>(fetch.address << 2);
-  for (uint32_t i = first; i < first + index_count; ++i) {
-    const uint32_t* vertex = vertices + size_t(i) * binding.stride_words;
-    float x = xenos::GpuSwap(*reinterpret_cast<const float*>(&vertex[0]), fetch.endian);
-    float w = xenos::GpuSwap(*reinterpret_cast<const float*>(&vertex[3]), fetch.endian);
-    if (w != 1.0f || !(std::abs(x) < 0.999f)) {
-      return;
+  // Indexed draws (text glyphs are 6-index quads) read their indices from
+  // the index buffer, as the PrimitiveProcessor does.
+  uint32_t index_offset = regs.Get<reg::VGT_INDX_OFFSET>().indx_offset;
+  const uint16_t* indices_16 = nullptr;
+  const uint32_t* indices_32 = nullptr;
+  xenos::Endian index_endian = regs.Get<reg::VGT_DMA_SIZE>().swap_mode;
+  if (!auto_index) {
+    uint32_t index_base = regs[XE_GPU_REG_VGT_DMA_BASE];
+    if (vgt_draw_initiator.index_size == xenos::IndexFormat::kInt16) {
+      if (index_endian == xenos::Endian::k8in32) {
+        index_endian = xenos::Endian::k8in16;
+      } else if (index_endian == xenos::Endian::k16in32) {
+        index_endian = xenos::Endian::kNone;
+      }
+      indices_16 = memory.TranslatePhysical<const uint16_t*>(index_base & ~uint32_t(1));
+    } else {
+      indices_32 = memory.TranslatePhysical<const uint32_t*>(index_base & ~uint32_t(3));
     }
   }
+  const uint32_t* vertices = memory.TranslatePhysical<const uint32_t*>(fetch.address << 2);
+  for (uint32_t i = 0; i < index_count; ++i) {
+    uint32_t vertex_index;
+    if (indices_16) {
+      vertex_index = xenos::GpuSwap(indices_16[i], index_endian);
+    } else if (indices_32) {
+      vertex_index = xenos::GpuSwap(indices_32[i], index_endian);
+    } else {
+      vertex_index = i;
+    }
+    vertex_index += index_offset;
+    if (uint64_t(vertex_index + 1) * binding.stride_words > fetch.size) {
+      return skip("vertex past the buffer");
+    }
+    const uint32_t* vertex = vertices + size_t(vertex_index) * binding.stride_words;
+    float x = xenos::GpuSwap(*reinterpret_cast<const float*>(&vertex[0]), fetch.endian);
+    float w = xenos::GpuSwap(*reinterpret_cast<const float*>(&vertex[3]), fetch.endian);
+    if (w != 1.0f) {
+      return skip("perspective (w != 1)");
+    }
+    if (!(std::abs(x) < 0.999f)) {
+      return skip("touches the screen's edge");
+    }
+  }
+  skip("narrowed");
   // Guest NDC 0 (the screen's center) stays at ndc_offset.
   viewport_info.ndc_scale[0] *= x_scale;
 }
