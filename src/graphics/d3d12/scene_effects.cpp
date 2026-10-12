@@ -426,7 +426,7 @@ bool D3D12SceneEffects::Dispatch(Pipeline pipeline, std::initializer_list<Source
                                  uint32_t width, uint32_t height) {
   uint32_t source_count = uint32_t(sources.size());
   uint32_t target_count = uint32_t(targets.size());
-  assert_true(source_count && source_count <= kMaxSources);
+  assert_true(source_count <= kMaxSources);
   assert_true(target_count && target_count <= kMaxTargets);
   D3D12_GPU_VIRTUAL_ADDRESS extra_address = 0;
   if (extra_constants_size) {
@@ -435,13 +435,23 @@ bool D3D12SceneEffects::Dispatch(Pipeline pipeline, std::initializer_list<Source
       return false;
     }
   }
+  // No sources (the SMAA tables): one null view for the source tables.
+  uint32_t source_descriptor_count = std::max(source_count, uint32_t(1));
   ui::d3d12::util::DescriptorCpuGpuHandlePair descriptors[kMaxSources + kMaxTargets];
-  if (!command_processor_.RequestOneUseSingleViewDescriptors(source_count + target_count,
-                                                             descriptors)) {
+  if (!command_processor_.RequestOneUseSingleViewDescriptors(
+          source_descriptor_count + target_count, descriptors)) {
     return false;
   }
   ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
   uint32_t descriptor_index = 0;
+  if (!source_count) {
+    D3D12_SHADER_RESOURCE_VIEW_DESC null_desc = {};
+    null_desc.Format = DXGI_FORMAT_R32_FLOAT;
+    null_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    null_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    null_desc.Texture2D.MipLevels = 1;
+    device->CreateShaderResourceView(nullptr, &null_desc, descriptors[descriptor_index++].first);
+  }
   for (const Source& source : sources) {
     // Guest render targets are only read by compute here.
     WriteSourceView(descriptors[descriptor_index++].first, source,
@@ -449,6 +459,10 @@ bool D3D12SceneEffects::Dispatch(Pipeline pipeline, std::initializer_list<Source
                                          : kShaderReadState);
   }
   for (const Target& target : targets) {
+    // Writes after writes (another pass, tile or MIP) are ordered too.
+    if (textures_[size_t(target.texture)].state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+      command_processor_.PushUAVBarrier(textures_[size_t(target.texture)].resource);
+    }
     TransitionTexture(target.texture, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     D3D12_UNORDERED_ACCESS_VIEW_DESC desc = {};
     desc.Format = GetFormat(kTextureInfos[size_t(target.texture)].format);
@@ -463,12 +477,12 @@ bool D3D12SceneEffects::Dispatch(Pipeline pipeline, std::initializer_list<Source
   // Unused tables get any valid descriptor of their kind.
   for (uint32_t i = 0; i < kMaxSources; ++i) {
     command_list.D3DSetComputeRootDescriptorTable(
-        kComputeSourceParameter + i, descriptors[std::min(i, source_count - 1)].second);
+        kComputeSourceParameter + i, descriptors[std::min(i, source_descriptor_count - 1)].second);
   }
   for (uint32_t i = 0; i < kMaxTargets; ++i) {
     command_list.D3DSetComputeRootDescriptorTable(
         kComputeTargetParameter + i,
-        descriptors[source_count + std::min(i, target_count - 1)].second);
+        descriptors[source_descriptor_count + std::min(i, target_count - 1)].second);
   }
   if (extra_address) {
     command_list.D3DSetComputeRootConstantBufferView(kComputeExtraConstantsParameter,

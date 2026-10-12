@@ -2294,7 +2294,11 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
     return IssueCopy();
   }
 
-  if (scene_effects_) {
+  // The scene effects may record work here (the composite before the HUD):
+  // into an open submission, not one the draw's BeginSubmission would then
+  // start afresh, dropping it (a submission can close mid-frame, such as at
+  // the end of an occlusion query).
+  if (scene_effects_ && BeginSubmission(true)) {
     scene_effects_->OnDraw(
         active_vertex_shader() ? active_vertex_shader()->ucode_data_hash() : 0,
         active_pixel_shader() ? active_pixel_shader()->ucode_data_hash() : 0);
