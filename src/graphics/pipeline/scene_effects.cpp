@@ -260,6 +260,12 @@ struct SunConstants {
   float contact[4];
 };
 
+struct DepthCopyConstants {
+  float reproject[4][4];
+  // x = 1 if reproject fills the rows not drawn yet from the previous depth.
+  float params[4];
+};
+
 struct TemporalConstants {
   float reproject[4][4];
   float params[4];
@@ -330,7 +336,8 @@ float WorldDensity(double per_meter) {
 
 const SceneEffects::TextureInfo
     SceneEffects::kTextureInfos[size_t(SceneEffects::Texture::kCount)] = {
-        {TextureFormat::kR32Float, 1, false},                   // kDepth
+        {TextureFormat::kR32Float, 1, true},                    // kDepth0
+        {TextureFormat::kR32Float, 1, true},                    // kDepth1
         {TextureFormat::kR32Float, kViewDepthMipCount, false},  // kViewDepth
         {TextureFormat::kR16Float, 1, false},                   // kAo0
         {TextureFormat::kR16Float, 1, false},                   // kAo1
@@ -355,8 +362,8 @@ const SceneEffects::TextureInfo
 
 const SceneEffects::PipelineInfo
     SceneEffects::kPipelineInfos[size_t(SceneEffects::Pipeline::kCount)] = {
-        {1, false, false, 1},  // kDepthCopy
-        {1, false, false, 1},  // kDepthCopyMsaa
+        {2, false, true, 1},   // kDepthCopy
+        {2, false, true, 1},   // kDepthCopyMsaa
         {1, false, false, 1},  // kShadowCopy
         {1, false, false, 4},  // kDepthPrefilter
         {2, false, false, 1},  // kAo
@@ -984,10 +991,22 @@ void SceneEffects::CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* sc
     constants.pass_rect[2] = uint32_t(std::max(screen_rect->right, 0));
     constants.pass_rect[3] = uint32_t(std::max(screen_rect->bottom, 0));
   }
+  uint64_t frame = GetCurrentFrame();
+  if (depth_copy_frame_ != frame) {
+    // The texture holding the previous frame's depth becomes the previous.
+    depth_copy_frame_ = frame;
+    depth_index_ ^= 1;
+  }
+  // The rows below a tile aren't drawn yet this frame: what's known of them
+  // is the previous frame's depth, reprojected (so the effects near the
+  // tile's lower edge don't see sky there, a line along each tile edge).
+  DepthCopyConstants dc = {};
+  dc.params[0] = screen_rect && GetDepthFillReprojection(dc.reproject) ? 1.0f : 0.0f;
   bool msaa = depth_rt.key().msaa_samples != xenos::MsaaSamples::k1X;
-  if (Dispatch(msaa ? Pipeline::kDepthCopyMsaa : Pipeline::kDepthCopy, {Source(&depth_rt)},
-               {Target(Texture::kDepth)}, &constants, nullptr, 0, width, height)) {
-    depth_frame_ = GetCurrentFrame();
+  if (Dispatch(msaa ? Pipeline::kDepthCopyMsaa : Pipeline::kDepthCopy,
+               {Source(&depth_rt), Source(PreviousDepthTexture())}, {Target(DepthTexture())},
+               &constants, &dc, sizeof(dc), width, height)) {
+    depth_frame_ = frame;
   }
 }
 
@@ -1178,6 +1197,26 @@ bool SceneEffects::GetReprojection(float reproject_out[4][4]) const {
   return true;
 }
 
+bool SceneEffects::GetDepthFillReprojection(float reproject_out[4][4]) const {
+  // The previous frame's camera: still frame_camera_ until this frame's
+  // effects have run once (ApplyEffects moves it to previous_camera_).
+  const float(*previous)[4] = effects_frame_ == GetCurrentFrame() ? previous_camera_ : frame_camera_;
+  bool previous_valid =
+      effects_frame_ == GetCurrentFrame() ? previous_camera_valid_ : frame_camera_valid_;
+  CameraBasis basis;
+  if (!previous_valid || !camera_.has_matrix || !GetCameraBasis(previous, basis)) {
+    return false;
+  }
+  for (uint32_t row = 0; row < 4; ++row) {
+    const float* c = camera_.rows[row];
+    reproject_out[row][0] = Dot3(c, basis.right);
+    reproject_out[row][1] = Dot3(c, basis.up);
+    reproject_out[row][2] = Dot3(c, basis.forward);
+    reproject_out[row][3] = Dot3(c, basis.position) + c[3];
+  }
+  return true;
+}
+
 bool SceneEffects::GetHeightRow(const CameraBasis& basis, float height_out[4]) const {
   uint32_t axis = basis.up_axis;
   height_out[0] = basis.right[axis] * basis.up_sign;
@@ -1238,7 +1277,7 @@ void SceneEffects::FillSunConstants(const CameraBasis& basis, void* constants_ou
     const ShadowCascade& cascade = shadow_cascades_[i];
     // Unusable cascades aren't sampled, but need a valid view.
     bool usable = IsShadowCascadeUsable(cascade);
-    shadow_sources_out[i] = usable ? Source(cascade.texture) : Source(Texture::kDepth);
+    shadow_sources_out[i] = usable ? Source(cascade.texture) : Source(DepthTexture());
     if (!usable) {
       continue;
     }
@@ -1338,7 +1377,7 @@ void SceneEffects::PrefilterDepth() {
   FxConstants constants;
   FillConstants(&constants, 0, 0);
   static_assert(kViewDepthMipCount == 4);
-  Dispatch(Pipeline::kDepthPrefilter, {Source(Texture::kDepth)},
+  Dispatch(Pipeline::kDepthPrefilter, {Source(DepthTexture())},
            {Target(Texture::kViewDepth, 0), Target(Texture::kViewDepth, 1),
             Target(Texture::kViewDepth, 2), Target(Texture::kViewDepth, 3)},
            &constants, nullptr, 0, EffectSize(scene_width_, 2), EffectSize(scene_height_, 2));
@@ -1356,11 +1395,11 @@ bool SceneEffects::ComputeAmbientOcclusion(bool global_illumination) {
   bool gi = global_illumination && scene_color_valid_[scene_color_index_ ^ 1] &&
             GetReprojection(reproject) &&
             Dispatch(Pipeline::kAoGi,
-                     {Source(Texture::kViewDepth), Source(Texture::kDepth), Source(previous_color)},
+                     {Source(Texture::kViewDepth), Source(DepthTexture()), Source(previous_color)},
                      {Target(Texture::kAo0), Target(Texture::kGi0)}, &constants, reproject,
                      sizeof(reproject), width, height);
   if (!gi) {
-    Dispatch(Pipeline::kAo, {Source(Texture::kViewDepth), Source(Texture::kDepth)},
+    Dispatch(Pipeline::kAo, {Source(Texture::kViewDepth), Source(DepthTexture())},
              {Target(Texture::kAo0)}, &constants, nullptr, 0, width, height);
   }
   if (REXCVAR_GET(scene_fx_ao)) {
@@ -1384,10 +1423,10 @@ bool SceneEffects::ComputeContactShadows() {
   FxConstants constants;
   FillConstants(&constants, 0, 0);
   constants.effect_scale = ao_scale_;
-  Texture effect_depth = ao_scale_ == 1 ? Texture::kDepth : Texture::kViewDepth;
+  Texture effect_depth = ao_scale_ == 1 ? DepthTexture() : Texture::kViewDepth;
   static_assert(kMaxShadowCascades == 2);
   if (!Dispatch(Pipeline::kContactShadows,
-                {Source(effect_depth), Source(Texture::kDepth), shadows[0], shadows[1]},
+                {Source(effect_depth), Source(DepthTexture()), shadows[0], shadows[1]},
                 {Target(Texture::kContactShadows0)}, &constants, &sun, sizeof(sun),
                 EffectSize(scene_width_, ao_scale_), EffectSize(scene_height_, ao_scale_))) {
     return false;
@@ -1419,7 +1458,7 @@ bool SceneEffects::ComputeReflections() {
   constants.effect_scale = ao_scale_;
   Texture previous_color = scene_color_index_ ? Texture::kSceneColor0 : Texture::kSceneColor1;
   if (!Dispatch(Pipeline::kReflections,
-                {Source(Texture::kViewDepth), Source(Texture::kDepth), Source(previous_color)},
+                {Source(Texture::kViewDepth), Source(DepthTexture()), Source(previous_color)},
                 {Target(Texture::kReflections0)}, &constants, &rc, sizeof(rc),
                 EffectSize(scene_width_, ao_scale_), EffectSize(scene_height_, ao_scale_))) {
     return false;
@@ -1441,7 +1480,7 @@ bool SceneEffects::ComputeVolumetrics() {
   constants.effect_scale = volumetric_scale_;
   uint32_t width = EffectSize(scene_width_, volumetric_scale_);
   uint32_t height = EffectSize(scene_height_, volumetric_scale_);
-  Texture effect_depth = volumetric_scale_ == 1 ? Texture::kDepth : Texture::kViewDepth;
+  Texture effect_depth = volumetric_scale_ == 1 ? DepthTexture() : Texture::kViewDepth;
   Texture sky = sky_index_ ? Texture::kSky1 : Texture::kSky0;
   if (!Dispatch(Pipeline::kVolumetric, {Source(effect_depth), shadows[0], shadows[1], Source(sky)},
                 {Target(Texture::kVolumetric)}, &constants, &sun, sizeof(sun), width, height)) {
@@ -1520,7 +1559,7 @@ void SceneEffects::EstimateSkyColor(RenderTarget& color_rt, const Rect& rect,
   bool msaa = color_rt.key().msaa_samples != xenos::MsaaSamples::k1X;
   // One 16x16 group.
   if (Dispatch(msaa ? Pipeline::kSkyColorMsaa : Pipeline::kSkyColor,
-               {Source(&color_rt), Source(Texture::kDepth), Source(previous)}, {Target(next)},
+               {Source(&color_rt), Source(DepthTexture()), Source(previous)}, {Target(next)},
                &constants, nullptr, 0, 1, 1)) {
     sky_index_ ^= 1;
   }
@@ -1549,7 +1588,7 @@ void SceneEffects::Blur(Texture texture_0, Texture texture_1, bool rgba, uint32_
   FxConstants constants;
   FillConstants(&constants, 0, 0);
   constants.effect_scale = scale;
-  Texture effect_depth = scale == 1 ? Texture::kDepth : Texture::kViewDepth;
+  Texture effect_depth = scale == 1 ? DepthTexture() : Texture::kViewDepth;
   uint32_t width = EffectSize(scene_width_, scale), height = EffectSize(scene_height_, scale);
   Pipeline pipeline = rgba ? Pipeline::kBlurRgba : Pipeline::kBlur;
   // Horizontal, then vertical, ending in texture_0.
@@ -1587,7 +1626,7 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
   Texture sky = sky_index_ ? Texture::kSky1 : Texture::kSky0;
   // In the order of the composite shader's t0...
   DrawFullscreen(draw, color_rt, rect,
-                 {Source(Texture::kAo0), Source(Texture::kViewDepth), Source(Texture::kDepth),
+                 {Source(Texture::kAo0), Source(Texture::kViewDepth), Source(DepthTexture()),
                   Source(volumetric_result_), Source(Texture::kGi0), Source(scene_color),
                   Source(sky), Source(Texture::kContactShadows0), Source(Texture::kReflections0)},
                  &constants, composite_constants_, sizeof(composite_constants_));

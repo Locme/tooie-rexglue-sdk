@@ -4,7 +4,8 @@
 // FX_MSAA selects the multisampled source variant.
 // A non-empty fx_pass_rect (screen pixels) limits the copy to that rectangle:
 // one tile of a predicated-tiled scene, keeping the tiles above (copied
-// before it) and emptying those below (not drawn yet).
+// before it) and, below it (not drawn yet), reprojecting the previous frame's
+// depth (fx_depth_params.x) or emptying.
 
 #include "scene_fx_common.hlsli"
 
@@ -13,7 +14,18 @@ FX_BINDING(0) Texture2DMS<float> fx_source : register(t0);
 #else
 FX_BINDING(0) Texture2D<float> fx_source : register(t0);
 #endif
+#ifdef FX_RAW
 FX_BINDING(1) FX_FORMAT_R32F RWTexture2D<float> fx_depth : register(u0);
+#else
+FX_BINDING(1) Texture2D<float> fx_depth_previous : register(t1);
+FX_EXTRA_CONSTANTS_BLOCK(2) {
+  // Previous frame's view space to this frame's clip space.
+  float4 fx_depth_reproject[4];
+  // x = 1 to fill the rows not drawn yet from the previous depth.
+  float4 fx_depth_params;
+};
+FX_BINDING(3) FX_FORMAT_R32F RWTexture2D<float> fx_depth : register(u0);
+#endif
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
@@ -26,10 +38,25 @@ void main(uint3 id : SV_DispatchThreadID) {
     }
 #ifndef FX_RAW
     if (id.y >= fx_pass_rect.w) {
-      // The tiles below aren't drawn yet this frame: what they hold is the
-      // previous frame's depth, which no longer lines up with this tile's
-      // (dark lines along the tile edges). Empty until they're copied.
-      fx_depth[id.xy] = 1.0e6;
+      // The tiles below aren't drawn yet this frame: the previous frame's
+      // depth where the camera has moved to (as the surface seen there was
+      // roughly where it is now), else sky. Not the previous depth as is:
+      // it no longer lines up with this tile's (dark lines along the tile
+      // edges), and not sky alone either (bright lines, nothing occluding
+      // from below).
+      float filled = 1.0e6;
+      if (fx_depth_params.x > 0.0) {
+        float previous = fx_depth_previous.Load(int3(id.xy, 0));
+        if (previous > 0.0 && previous < 1.0e5) {
+          float4 p = float4(FxViewPosition(float2(id.xy) + 0.5, previous), 1.0);
+          // The view space distance is the clip space w.
+          float distance = dot(fx_depth_reproject[3], p);
+          if (distance > 0.0) {
+            filled = min(distance, 1.0e6);
+          }
+        }
+      }
+      fx_depth[id.xy] = filled;
       return;
     }
 #endif

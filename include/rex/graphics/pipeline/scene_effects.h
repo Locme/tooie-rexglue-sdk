@@ -49,8 +49,10 @@ class SceneEffects {
 
   // Textures the effects own. Formats and sizes are in kTextureInfos.
   enum class Texture : uint32_t {
-    // Full resolution linear view distance.
-    kDepth,
+    // Full resolution linear view distance, this frame and the previous
+    // (DepthTexture, PreviousDepthTexture).
+    kDepth0,
+    kDepth1,
     // Half resolution view distance, kViewDepthMipCount levels (MIP 0 texel
     // i: scene pixel 2i).
     kViewDepth,
@@ -259,6 +261,13 @@ class SceneEffects {
   static bool IsOrthographic(const float rows[4][4]);
   static bool IsPerspective(const float rows[4][4]);
   static bool GetCameraBasis(const float rows[4][4], CameraBasis& basis_out);
+  Texture DepthTexture() const { return depth_index_ ? Texture::kDepth1 : Texture::kDepth0; }
+  Texture PreviousDepthTexture() const {
+    return depth_index_ ? Texture::kDepth0 : Texture::kDepth1;
+  }
+  // Previous frame's view space to this frame's clip space, for filling the
+  // rows of the depth a tiled frame hasn't drawn yet.
+  bool GetDepthFillReprojection(float reproject_out[4][4]) const;
   // The most common draw state (camera constants and depth range) of the pass
   // being resolved, orthographic (a shadow map) or perspective (the scene).
   const DrawState* GetDominantDrawState(bool orthographic) const;
@@ -328,6 +337,10 @@ class SceneEffects {
   uint32_t scene_width_ = 0;
   uint32_t scene_height_ = 0;
   uint64_t depth_frame_ = UINT64_MAX;
+  // The depth texture this frame is copied into (the other one is the
+  // previous frame's), swapped at the frame's first copy.
+  uint32_t depth_index_ = 0;
+  uint64_t depth_copy_frame_ = UINT64_MAX;
   // The last frame with the scene's HDR color resolved, and with the effects.
   uint64_t hdr_frame_ = UINT64_MAX;
   uint64_t effects_frame_ = UINT64_MAX;
