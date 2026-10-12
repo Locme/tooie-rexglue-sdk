@@ -89,7 +89,8 @@ REXCVAR_DEFINE_STRING(dump_textures, "", "GPU",
 REXCVAR_DEFINE_STRING(texture_replacements, "", "GPU",
                       "Folder with replacement textures: <name>.dds or <name>.png named like "
                       "the dump_textures files; loaded in place of the game's textures "
-                      "(may be larger and have more mip levels).");
+                      "(may be larger and have more mip levels). Several folders may be "
+                      "given separated by ';', the first one holding a file wins.");
 
 
 // DEFINE_int32(
@@ -474,7 +475,8 @@ void TextureCache::DumpTextureIfRequested(const Texture& texture) {
     return;
   }
   if (texture_files::DumpBaseLevel(directory, stem, guest_base, description)) {
-    REXGPU_INFO("Texture dump: {}.dds", stem);
+    REXGPU_INFO("Texture dump: {}.dds (guest base 0x{:08X}, {} bytes)", stem, key.base_page << 12,
+                guest_base_size);
   } else {
     REXGPU_WARN("Texture dump: {} not dumpable (format {}, dimension {})", stem,
                 uint32_t(key.format), uint32_t(key.dimension));
@@ -510,11 +512,23 @@ std::shared_ptr<const texture_files::Replacement> TextureCache::FindReplacement(
   if (it != replacements_.end()) {
     return it->second;
   }
-  std::string error;
-  std::shared_ptr<texture_files::Replacement> replacement = texture_files::LoadReplacement(
-      std::filesystem::path(root), creating_replacement_stem_, guest_file_format, &error);
-  if (!replacement && !error.empty()) {
-    REXGPU_WARN("Texture replacement: {} not loaded: {}", creating_replacement_stem_, error);
+  std::shared_ptr<texture_files::Replacement> replacement;
+  size_t start = 0;
+  while (!replacement && start <= root.size()) {
+    size_t end = root.find(';', start);
+    if (end == std::string::npos) {
+      end = root.size();
+    }
+    if (end > start) {
+      std::string error;
+      replacement = texture_files::LoadReplacement(
+          std::filesystem::path(root.substr(start, end - start)), creating_replacement_stem_,
+          guest_file_format, &error);
+      if (!replacement && !error.empty()) {
+        REXGPU_WARN("Texture replacement: {} not loaded: {}", creating_replacement_stem_, error);
+      }
+    }
+    start = end + 1;
   }
   if (replacement) {
     replacement->guest_hash = hash;
