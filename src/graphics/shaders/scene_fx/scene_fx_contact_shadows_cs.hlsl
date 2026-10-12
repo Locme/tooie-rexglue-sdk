@@ -42,10 +42,10 @@ void main(uint3 id : SV_DispatchThreadID) {
     return;
   }
 
-  // How squarely the surface faces the sun, for rays that leave the screen
-  // before finding anything: a surface facing away from the sun
-  // is its own shadow, which its ray otherwise finds by going into it. Lit
-  // there instead, strips along the screen's edges the sun is toward were.
+  // A surface turned away from the sun is its own shadow, fading in around
+  // where it turns (not a hard line along a crease in the ground, as when
+  // the ray found it by going into the surface; and not lit near the
+  // screen's edges, where such a ray left the screen first).
   float3 right = FxEffectViewPosition(texel + int2(1, 0)) - position;
   float3 left = position - FxEffectViewPosition(texel - int2(1, 0));
   float3 down = FxEffectViewPosition(texel + int2(0, 1)) - position;
@@ -56,18 +56,21 @@ void main(uint3 id : SV_DispatchThreadID) {
   if (dot(normal, position) > 0.0) {
     normal = -normal;
   }
-  float off_screen_occlusion = saturate(-dot(normal, fx_sun_direction.xyz) / 0.1);
+  float facing = dot(normal, fx_sun_direction.xyz);
+  float self_occlusion = saturate((0.15 - facing) / 0.3);
 
   float ray_length = fx_sun_contact.x;
   float thickness = fx_sun_contact.y;
   uint step_count = max(uint(fx_sun_contact.z), 1u);
   float jitter = FxNoise(float2(texel));
-  // Not the surface itself: depth precision and the slope it's seen at.
+  // Not the surface itself: the ray starts a little off it, and depth
+  // precision and the slope it's seen at need a margin.
   float bias = 0.002 * distance + 0.01;
+  float3 origin = position + normal * (0.01 * distance);
   float occlusion = 0.0;
   for (uint i = 0; i < step_count; ++i) {
     float t = (float(i) + jitter) / float(step_count);
-    float3 sample_position = position + fx_sun_direction.xyz * (ray_length * t);
+    float3 sample_position = origin + fx_sun_direction.xyz * (ray_length * t);
     if (sample_position.z <= 0.05) {
       break;
     }
@@ -75,7 +78,6 @@ void main(uint3 id : SV_DispatchThreadID) {
                  (sample_position.z * float2(fx_inv_p00, fx_inv_p11));
     float2 screen = (ndc * float2(0.5, -0.5) + 0.5) * float2(fx_scene_size);
     if (any(screen < 0.0) || any(screen >= float2(fx_scene_size))) {
-      occlusion = off_screen_occlusion;
       break;
     }
     float scene_distance = fx_depth.Load(int3(int2(screen), 0));
@@ -86,5 +88,5 @@ void main(uint3 id : SV_DispatchThreadID) {
       break;
     }
   }
-  fx_contact[texel] = 1.0 - occlusion * lit;
+  fx_contact[texel] = 1.0 - max(occlusion, self_occlusion) * lit;
 }
