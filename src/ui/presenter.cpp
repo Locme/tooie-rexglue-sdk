@@ -9,6 +9,7 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <cstdio>
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -32,6 +33,10 @@ REXCVAR_DEFINE_BOOL(host_present_from_non_ui_thread, true, "UI/Presenter",
 
 REXCVAR_DEFINE_BOOL(present_letterbox, true, "UI/Presenter",
                     "Enable letterboxing for non-native aspect ratios");
+
+REXCVAR_DEFINE_STRING(present_aspect, "", "UI/Presenter",
+                      "Show the guest image at this aspect instead of the guest's display aspect, "
+                      "as W:H (for example 4:3); empty keeps the guest's");
 
 REXCVAR_DEFINE_INT32(present_safe_area_x, 90, "UI/Presenter",
                      "Horizontal safe area percentage (0-100)")
@@ -567,6 +572,16 @@ bool Presenter::RefreshGuestOutput(
       guest_output_properties_[guest_output_mailbox_writable_];
   writable_properties.frontbuffer_width = frontbuffer_width;
   writable_properties.frontbuffer_height = frontbuffer_height;
+  // An aspect override (present_aspect, "W:H") replaces the guest's.
+  {
+    const std::string aspect = REXCVAR_GET(present_aspect);
+    unsigned ax = 0, ay = 0;
+    if (!aspect.empty() && std::sscanf(aspect.c_str(), "%u:%u", &ax, &ay) == 2 && ax && ay &&
+        ax <= 1000 && ay <= 1000) {
+      display_aspect_ratio_x = ax;
+      display_aspect_ratio_y = ay;
+    }
+  }
   writable_properties.display_aspect_ratio_x = display_aspect_ratio_x;
   writable_properties.display_aspect_ratio_y = display_aspect_ratio_y;
   writable_properties.is_8bpc = false;
