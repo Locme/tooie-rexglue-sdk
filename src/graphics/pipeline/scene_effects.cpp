@@ -179,6 +179,14 @@ REXCVAR_DEFINE_INT32(scene_fx_colorblind, 0, "GPU/Effects",
 REXCVAR_DEFINE_DOUBLE(scene_fx_colorblind_strength, 1.0, "GPU/Effects",
                       "Colorblind correction strength (0...1)")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_bloom, false, "GPU/Effects",
+                    "Subtle bloom: a soft glow around the brightest parts of an 8-bit scene "
+                    "(before the HUD)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_intensity, 0.25, "GPU/Effects", "Bloom strength")
+    .range(0.0, 2.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_bloom_threshold, 0.75, "GPU/Effects",
+                      "Brightness (0...1) above which the scene glows")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_sharpen, false, "GPU/Effects",
                     "Contrast-adaptive sharpening of the final image") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_sharpen_amount, 0.5, "GPU/Effects", "Sharpening strength")
@@ -332,6 +340,7 @@ constexpr uint32_t kEffectGi = 4;
 constexpr uint32_t kEffectFog = 8;
 constexpr uint32_t kEffectContactShadows = 16;
 constexpr uint32_t kEffectReflections = 32;
+constexpr uint32_t kEffectBloom = 64;
 constexpr int32_t kDebugSplit = 1;
 constexpr uint32_t kCompositeMultiply = 0;
 constexpr uint32_t kCompositeAdd = 1;
@@ -404,6 +413,9 @@ const SceneEffects::TextureInfo
         {TextureFormat::kRGBA16Float, 1, false},                // kSmaaEdges
         {TextureFormat::kRGBA16Float, 1, false},                // kSmaaWeights
         {TextureFormat::kRGBA16Float, 1, false},                // kSmaaImage
+        {TextureFormat::kRGBA16Float, 1, false},                // kBloomBright
+        {TextureFormat::kRGBA16Float, 1, false},                // kBloomBlur
+        {TextureFormat::kRGBA16Float, 1, false},                // kBloom
 };
 
 const SceneEffects::PipelineInfo
@@ -430,6 +442,8 @@ const SceneEffects::PipelineInfo
         {1, false, false, 1},  // kSmaaEdges
         {3, true, false, 1},   // kSmaaWeights
         {2, true, false, 1},   // kSmaaBlend
+        {1, false, true, 1},   // kBloomPrefilter
+        {1, false, false, 1},  // kBloomBlur
 };
 
 SceneEffects::SceneEffects(RenderTargetCache& render_target_cache,
@@ -451,7 +465,8 @@ SceneEffects::~SceneEffects() = default;
 bool SceneEffects::AnySceneEffectEnabled() {
   return REXCVAR_GET(scene_fx_ao) || REXCVAR_GET(scene_fx_gi) ||
          REXCVAR_GET(scene_fx_contact_shadows) || REXCVAR_GET(scene_fx_reflections) ||
-         REXCVAR_GET(scene_fx_volumetrics) || REXCVAR_GET(scene_fx_fog);
+         REXCVAR_GET(scene_fx_volumetrics) || REXCVAR_GET(scene_fx_fog) ||
+         REXCVAR_GET(scene_fx_bloom);
 }
 
 bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
@@ -1210,6 +1225,12 @@ bool SceneEffects::EnsureSceneTextures(uint32_t width, uint32_t height) {
       case Texture::kSky1:
         texture_width = texture_height = 1;
         break;
+      case Texture::kBloomBright:
+      case Texture::kBloomBlur:
+      case Texture::kBloom:
+        texture_width = EffectSize(texture_width_, 4);
+        texture_height = EffectSize(texture_height_, 4);
+        break;
       case Texture::kShadow0:
       case Texture::kShadow1:
       case Texture::kFinalImage:
@@ -1632,6 +1653,7 @@ bool SceneEffects::FillFogConstants() {
   std::memset(composite_constants_, 0, sizeof(composite_constants_));
   composite_constants_[5][0] = float(REXCVAR_GET(scene_fx_contact_shadows_strength));
   composite_constants_[5][1] = float(REXCVAR_GET(scene_fx_reflections_intensity));
+  composite_constants_[5][2] = float(REXCVAR_GET(scene_fx_bloom_intensity));
   CameraBasis basis;
   if (!camera_.has_matrix || !GetCameraBasis(camera_.rows, basis)) {
     return false;
@@ -1730,7 +1752,8 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
                            (volumetrics_computed_ ? kEffectVolumetrics : 0) |
                            (fog_enabled_ ? kEffectFog : 0) |
                            (contact_shadows_computed_ ? kEffectContactShadows : 0) |
-                           (reflections_computed_ ? kEffectReflections : 0);
+                           (reflections_computed_ ? kEffectReflections : 0) |
+                           (draw == Draw::kCompositeResolve && bloom_computed_ ? kEffectBloom : 0);
   constants.composite_mode = draw == Draw::kCompositeAdd       ? kCompositeAdd
                              : draw == Draw::kCompositeDebug   ? kCompositeDebug
                              : draw == Draw::kCompositeResolve ? kCompositeResolve
@@ -1747,8 +1770,58 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
                  {Source(Texture::kAo0), Source(Texture::kViewDepth), Source(DepthTexture()),
                   Source(volumetric_result_), Source(Texture::kGi0), Source(scene_color),
                   Source(sky), Source(Texture::kContactShadows0), Source(Texture::kReflections0),
-                  Source(Texture::kFinalImage)},
+                  Source(Texture::kFinalImage), Source(Texture::kBloom)},
                  &constants, composite_constants_, sizeof(composite_constants_));
+}
+
+bool SceneEffects::ComputeBloom(const Rect& rect, int32_t screen_offset_x,
+                                int32_t screen_offset_y) {
+  // The tile's bright pass at a quarter of its screen position (the tiles are
+  // multiples of 4 high), blurred over it plus the blur's reach above and
+  // below.
+  FxConstants constants;
+  FillConstants(&constants, screen_offset_x, screen_offset_y);
+  constants.pass_rect[0] = uint32_t(rect.left);
+  constants.pass_rect[1] = uint32_t(rect.top);
+  constants.pass_rect[2] = uint32_t(rect.right);
+  constants.pass_rect[3] = uint32_t(rect.bottom);
+  float threshold = float(REXCVAR_GET(scene_fx_bloom_threshold));
+  float bloom_constants[4] = {threshold, 0.5f * std::max(threshold, 0.05f), 0.0f, 0.0f};
+  uint32_t width = uint32_t(rect.right - rect.left), height = uint32_t(rect.bottom - rect.top);
+  if (!Dispatch(Pipeline::kBloomPrefilter, {Source(Texture::kFinalImage)},
+                {Target(Texture::kBloomBright)}, &constants, bloom_constants,
+                sizeof(bloom_constants), (width + 3) / 4, (height + 3) / 4)) {
+    return false;
+  }
+  constexpr int32_t kReach = 12;
+  int32_t quarter_width = int32_t(EffectSize(scene_width_, 4));
+  int32_t quarter_height = int32_t(EffectSize(scene_height_, 4));
+  int32_t left = std::max(0, (rect.left + screen_offset_x) / 4);
+  int32_t right = std::min(quarter_width, (rect.right + screen_offset_x + 3) / 4);
+  int32_t top = std::max(0, (rect.top + screen_offset_y) / 4);
+  int32_t bottom = std::min(quarter_height, (rect.bottom + screen_offset_y + 3) / 4);
+  int32_t reach_top = std::max(0, top - kReach);
+  int32_t reach_bottom = std::min(quarter_height, bottom + kReach);
+  if (right <= left || bottom <= top) {
+    return false;
+  }
+  constants.blur_direction[0] = 1;
+  constants.blur_direction[1] = 0;
+  constants.pass_rect[0] = uint32_t(left);
+  constants.pass_rect[1] = uint32_t(reach_top);
+  constants.pass_rect[2] = uint32_t(right);
+  constants.pass_rect[3] = uint32_t(reach_bottom);
+  if (!Dispatch(Pipeline::kBloomBlur, {Source(Texture::kBloomBright)},
+                {Target(Texture::kBloomBlur)}, &constants, nullptr, 0, uint32_t(right - left),
+                uint32_t(reach_bottom - reach_top))) {
+    return false;
+  }
+  constants.blur_direction[0] = 0;
+  constants.blur_direction[1] = 1;
+  constants.pass_rect[1] = uint32_t(top);
+  constants.pass_rect[3] = uint32_t(bottom);
+  return Dispatch(Pipeline::kBloomBlur, {Source(Texture::kBloomBlur)}, {Target(Texture::kBloom)},
+                  &constants, nullptr, 0, uint32_t(right - left), uint32_t(bottom - top));
 }
 
 bool SceneEffects::ClipToSceneDraws(Rect& rect) const {
@@ -1773,10 +1846,12 @@ void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rec
   }
   bool multiply = ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_;
   bool add = fog_enabled_ || volumetrics_computed_ || reflections_computed_;
-  if (!multiply && !add) {
+  bool bloom = sdr && REXCVAR_GET(scene_fx_bloom);
+  bloom_computed_ = false;
+  if (!multiply && !add && !bloom) {
     return;
   }
-  if (sdr && REXCVAR_GET(scene_fx_16bit) &&
+  if (sdr && (REXCVAR_GET(scene_fx_16bit) || bloom) &&
       EnsureImageTexture(Texture::kFinalImage, uint32_t(rect.right), uint32_t(rect.bottom))) {
     // The tile copied at 16 bits, the effects applied to it in one pass and
     // dithered back: one 8-bit rounding instead of one per blend.
@@ -1790,8 +1865,10 @@ void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rec
     if (Dispatch(msaa ? Pipeline::kColorCopyMsaa : Pipeline::kColorCopy, {Source(&color_rt)},
                  {Target(Texture::kFinalImage)}, &constants, nullptr, 0,
                  uint32_t(rect.right - rect.left), uint32_t(rect.bottom - rect.top))) {
+      bloom_computed_ = bloom && ComputeBloom(rect, screen_offset_x, screen_offset_y);
       Composite(color_rt, rect, screen_offset_x, screen_offset_y, 1.0f, 1.0f,
                 Draw::kCompositeResolve, trace);
+      bloom_computed_ = false;
       return;
     }
   }

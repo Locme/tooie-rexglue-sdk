@@ -30,7 +30,9 @@ FX_BINDING(7) Texture2D<float> fx_contact_shadows : register(t7);
 FX_BINDING(8) Texture2D<float4> fx_reflections : register(t8);
 // Resolve: the render target's copy, at its pixels.
 FX_BINDING(9) Texture2D<float4> fx_scene_image : register(t9);
-FX_EXTRA_CONSTANTS_BLOCK(10) {
+// Resolve: the bloom, at a quarter of the screen's resolution.
+FX_BINDING(10) Texture2D<float4> fx_bloom : register(t10);
+FX_EXTRA_CONSTANTS_BLOCK(11) {
   // xyz = view space direction to world height, w = the camera's height.
   float4 fx_fog_height;
   // Density: x = at height y (world), z = falloff with height, w = everywhere.
@@ -42,7 +44,7 @@ FX_EXTRA_CONSTANTS_BLOCK(10) {
   float4 fx_fog_sun;
   // rgb = sunlight scattered by the fog relative to the sky's color.
   float4 fx_fog_sun_color;
-  // x = contact shadow strength, y = reflection intensity.
+  // x = contact shadow strength, y = reflection intensity, z = bloom intensity.
   float4 fx_effect_strengths;
 };
 
@@ -224,6 +226,22 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   float3 multiplier = (ao * contact + indirect) * fog_transmittance;
   if (resolve) {
+    if (fx_effect_flags & FX_EFFECT_BLOOM) {
+      // Bilinear between the quarter-resolution texels.
+      int2 bloom_size = int2((fx_scene_size + 3u) >> 2);
+      float2 bloom_position = screen * 0.25 - 0.5;
+      int2 bloom_base = int2(floor(bloom_position));
+      float2 f = bloom_position - float2(bloom_base);
+      float3 b00 = fx_bloom.Load(int3(clamp(bloom_base, 0, bloom_size - 1), 0)).rgb;
+      float3 b10 = fx_bloom.Load(int3(clamp(bloom_base + int2(1, 0), 0, bloom_size - 1), 0)).rgb;
+      float3 b01 = fx_bloom.Load(int3(clamp(bloom_base + int2(0, 1), 0, bloom_size - 1), 0)).rgb;
+      float3 b11 = fx_bloom.Load(int3(clamp(bloom_base + int2(1, 1), 0, bloom_size - 1), 0)).rgb;
+      float3 glow = lerp(lerp(b00, b10, f.x), lerp(b01, b11, f.x), f.y);
+      // Screen blend: glows without clipping the brights.
+      float3 lit = scene * multiplier + added;
+      lit = 1.0 - (1.0 - saturate(lit)) * (1.0 - saturate(glow * fx_effect_strengths.z));
+      return float4(saturate(lit + FxDither8(position.xy)), 1.0);
+    }
     return float4(saturate(scene * multiplier + added + FxDither8(position.xy)), 1.0);
   }
   return float4(multiplier, 1.0);

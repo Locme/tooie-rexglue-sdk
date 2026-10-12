@@ -94,6 +94,11 @@ class SceneEffects {
     kSmaaEdges,
     kSmaaWeights,
     kSmaaImage,
+    // Bloom at a quarter of the screen's resolution, in screen space: the
+    // bright pass (kept over frames), the horizontal blur, the result.
+    kBloomBright,
+    kBloomBlur,
+    kBloom,
 
     kCount,
   };
@@ -137,6 +142,8 @@ class SceneEffects {
     kSmaaEdges,
     kSmaaWeights,
     kSmaaBlend,
+    kBloomPrefilter,
+    kBloomBlur,
 
     kCount,
   };
@@ -192,7 +199,7 @@ class SceneEffects {
 
   static constexpr uint32_t kMaxSources = 8;
   static constexpr uint32_t kMaxTargets = 4;
-  static constexpr uint32_t kDrawSourceCount = 10;
+  static constexpr uint32_t kDrawSourceCount = 11;
   static constexpr uint32_t kViewDepthMipCount = 4;
   static constexpr uint32_t kMaxShadowCascades = 2;
   // FxConstants: 32 dwords - also the minimum guaranteed Vulkan push constant
@@ -358,6 +365,8 @@ class SceneEffects {
                         int32_t screen_offset_y, bool sdr, bool trace);
   // Narrows rect to scene_draw_rect_ (when known); false when nothing is left.
   bool ClipToSceneDraws(Rect& rect) const;
+  // The bloom of the tile in kFinalImage (its 16-bit copy) into kBloom.
+  bool ComputeBloom(const Rect& rect, int32_t screen_offset_x, int32_t screen_offset_y);
   bool EnsureImageTexture(Texture texture, uint32_t width, uint32_t height);
   bool ApplySmaa(const void* constants, const Rect& rect, uint32_t width,
                  uint32_t height);
@@ -384,6 +393,7 @@ class SceneEffects {
 
   // What was computed for the current frame, and at which resolution.
   bool smaa_tables_written_ = false;
+  bool bloom_computed_ = false;
   // Size of the final image's textures (kFinalImage, the SMAA ones), the
   // largest asked for.
   uint32_t image_width_ = 0;

@@ -346,6 +346,16 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     ImGui::PopID();
   }
 
+  if (EffectHeader("Bloom", "scene_fx_bloom")) {
+    ImGui::PushID("bloom");
+    Description(
+        "A soft glow around the brightest parts of the scene, before the HUD (8-bit scenes; "
+        "uses the 16-bit composite).");
+    SliderCvar("Strength", "scene_fx_bloom_intensity", 0.0f, 2.0f);
+    SliderCvar("Threshold", "scene_fx_bloom_threshold", 0.0f, 1.0f);
+    ImGui::PopID();
+  }
+
   if (EffectHeader("16-bit Effects", "scene_fx_16bit")) {
     ImGui::PushID("16bit");
     Description(
