@@ -43,7 +43,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   }
 
   // How squarely the surface faces the sun, for rays that leave the screen
-  // before finding anything: a surface facing away from (or along) the sun
+  // before finding anything: a surface facing away from the sun
   // is its own shadow, which its ray otherwise finds by going into it. Lit
   // there instead, strips along the screen's edges the sun is toward were.
   float3 right = FxEffectViewPosition(texel + int2(1, 0)) - position;
@@ -56,7 +56,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   if (dot(normal, position) > 0.0) {
     normal = -normal;
   }
-  float off_screen_occlusion = saturate((0.2 - dot(normal, fx_sun_direction.xyz)) / 0.2);
+  float off_screen_occlusion = saturate(-dot(normal, fx_sun_direction.xyz) / 0.1);
 
   float ray_length = fx_sun_contact.x;
   float thickness = fx_sun_contact.y;

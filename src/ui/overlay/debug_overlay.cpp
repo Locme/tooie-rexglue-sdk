@@ -50,7 +50,7 @@ void DebugOverlayDialog::OnDraw(ImGuiIO& io) {
     if (timing) {
       auto timings = rex::system::GetEffectTimings();
       if (timings.empty()) {
-        ImGui::TextUnformatted("  (measuring...)");
+        ImGui::TextUnformatted("  (nothing yet: times show while a scene effect is on)");
       }
       for (const auto& [name, ms] : timings) {
         ImGui::Text("  %-14s %6.3f ms", name.c_str(), ms);
