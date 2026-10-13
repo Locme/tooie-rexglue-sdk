@@ -85,6 +85,11 @@ REXCVAR_DEFINE_BOOL(pre_mask_resolve_l2_block, true, "GPU",
 REXCVAR_DEFINE_STRING(dump_textures, "", "GPU",
                       "Folder to write the textures the game uploads to, as DDS files named "
                       "<format>_<width>x<height>_<hash>.dds (base level only; empty = off)");
+REXCVAR_DEFINE_STRING(dump_textures_format, "dds", "GPU",
+                      "File type of the dump_textures files: dds (the game's own format, "
+                      "compressed ones stay compressed) or png (decoded to 8-bit RGBA, for "
+                      "editing and AI upscalers)")
+    .allowed({"dds", "png"});
 REXCVAR_DEFINE_STRING(texture_replacements, "", "GPU",
                       "Folder with replacement textures: <name>.dds or <name>.png named like "
                       "the dump_textures files; loaded in place of the game's textures "
@@ -475,19 +480,23 @@ void TextureCache::DumpTextureIfRequested(const Texture& texture) {
   }
   uint64_t hash = texture_files::HashGuestBase(guest_base, guest_base_size, description);
   // Each distinct texture once per run (the same bytes reload many times).
-  if (!dumped_texture_hashes_.insert(hash).second) {
+  const bool png = REXCVAR_GET(dump_textures_format) == "png";
+  if (!dumped_texture_hashes_.insert(hash * 2 + (png ? 1 : 0)).second) {
     return;
   }
   std::string stem = texture_files::FileStem(description, hash);
   std::filesystem::path directory(dump_root);
   std::error_code error;
-  if (std::filesystem::exists(directory / (stem + ".dds"), error)) {
+  const char* extension = png ? ".png" : ".dds";
+  if (std::filesystem::exists(directory / (stem + extension), error)) {
     return;
   }
-  if (texture_files::DumpBaseLevel(directory, stem, guest_base, description,
-                                  texture.file_swizzle())) {
-    REXGPU_INFO("Texture dump: {}.dds (guest base 0x{:08X}, {} bytes)", stem, key.base_page << 12,
-                guest_base_size);
+  if (png ? texture_files::DumpBaseLevelPng(directory, stem, guest_base, description,
+                                            texture.file_swizzle())
+          : texture_files::DumpBaseLevel(directory, stem, guest_base, description,
+                                         texture.file_swizzle())) {
+    REXGPU_INFO("Texture dump: {}{} (guest base 0x{:08X}, {} bytes)", stem, extension,
+                key.base_page << 12, guest_base_size);
   } else {
     REXGPU_WARN("Texture dump: {} not dumpable (format {}, dimension {})", stem,
                 uint32_t(key.format), uint32_t(key.dimension));

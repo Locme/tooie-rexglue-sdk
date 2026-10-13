@@ -3482,18 +3482,24 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
     // Submission already closed now, so minus 1.
     closed_frame_submissions_[(frame_current_++) % kQueueFrames] = submission_current_ - 1;
 
-    // texture_replacements, live: a changed folder list or texture_upscale (or a
+    // texture_replacements, live: a changed folder list, texture_upscale or the
+    // texture dump settings (so a new dump catches what is loaded) (or a
     // texture_files::RequestReload) drops the loaded replacements and the
     // textures, so they are looked up again.
     static uint64_t texture_reload_seen = 0;
     static std::string texture_replacements_seen = REXCVAR_GET(texture_replacements);
     static int32_t texture_upscale_seen = REXCVAR_GET(texture_upscale);
+    static std::string dump_textures_seen =
+        REXCVAR_GET(dump_textures) + "|" + REXCVAR_GET(dump_textures_format);
     if (texture_files::ReloadGeneration() != texture_reload_seen ||
         REXCVAR_GET(texture_replacements) != texture_replacements_seen ||
-        REXCVAR_GET(texture_upscale) != texture_upscale_seen) {
+        REXCVAR_GET(texture_upscale) != texture_upscale_seen ||
+        REXCVAR_GET(dump_textures) + "|" + REXCVAR_GET(dump_textures_format) !=
+            dump_textures_seen) {
       texture_reload_seen = texture_files::ReloadGeneration();
       texture_replacements_seen = REXCVAR_GET(texture_replacements);
       texture_upscale_seen = REXCVAR_GET(texture_upscale);
+      dump_textures_seen = REXCVAR_GET(dump_textures) + "|" + REXCVAR_GET(dump_textures_format);
       ClearCaches();
     }
     if (cache_clear_requested_ && AwaitAllQueueOperationsCompletion()) {

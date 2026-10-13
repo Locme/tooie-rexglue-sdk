@@ -127,6 +127,18 @@ bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& st
                    const uint8_t* guest_base, const Description& description,
                    uint32_t swizzle = kIdentitySwizzle);
 
+// The same as a PNG file (<directory>/<stem>.png, 8-bit RGBA, written by a
+// background thread), decoded from any file format DecodeToRGBA8 knows.
+bool DumpBaseLevelPng(const std::filesystem::path& directory, const std::string& stem,
+                      const uint8_t* guest_base, const Description& description,
+                      uint32_t swizzle = kIdentitySwizzle);
+
+// Pixels of `format` (rows of `pitch` bytes, blocks for BC1..BC4) as RGBA8,
+// width x height, rows tightly packed. False for formats it doesn't know
+// (16-bit float and BC5).
+bool DecodeToRGBA8(FileFormat format, const uint8_t* data, uint32_t pitch, uint32_t width,
+                   uint32_t height, std::vector<uint8_t>& rgba);
+
 // texture_upscale: whether a guest texture can be upscaled (2D, 8_8_8_8).
 bool CanUpscale(const Description& description);
 // The base level upscaled `scale` times (2 or 4, texture_upscale::Scale) as an

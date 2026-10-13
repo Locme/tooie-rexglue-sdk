@@ -341,6 +341,170 @@ std::shared_ptr<Replacement> UpscaleBaseLevel(const uint8_t* guest_base, const D
   return RGBA8WithMips(std::move(base), width, height);
 }
 
+namespace {
+
+uint8_t Expand(uint32_t v, uint32_t bits) {
+  return uint8_t(bits >= 8 ? v : (v * 255 + ((1u << bits) - 1) / 2) / ((1u << bits) - 1));
+}
+
+uint16_t LoadLE16(const uint8_t* p) { return uint16_t(p[0] | p[1] << 8); }
+
+// A BC1 color block's four colors (RGBA8); `bc1` allows the transparent
+// fourth color.
+void Bc1Palette(const uint8_t* block, bool bc1, uint8_t palette[4][4]) {
+  const uint16_t c0 = LoadLE16(block), c1 = LoadLE16(block + 2);
+  for (int i = 0; i < 2; ++i) {
+    const uint16_t c = i ? c1 : c0;
+    palette[i][0] = Expand(c >> 11, 5);
+    palette[i][1] = Expand((c >> 5) & 63, 6);
+    palette[i][2] = Expand(c & 31, 5);
+    palette[i][3] = 255;
+  }
+  for (int ch = 0; ch < 3; ++ch) {
+    if (!bc1 || c0 > c1) {
+      palette[2][ch] = uint8_t((2 * palette[0][ch] + palette[1][ch] + 1) / 3);
+      palette[3][ch] = uint8_t((palette[0][ch] + 2 * palette[1][ch] + 1) / 3);
+    } else {
+      palette[2][ch] = uint8_t((palette[0][ch] + palette[1][ch] + 1) / 2);
+      palette[3][ch] = 0;
+    }
+  }
+  palette[2][3] = 255;
+  palette[3][3] = (!bc1 || c0 > c1) ? 255 : 0;
+}
+
+// The 8 alphas of a BC3 / BC4 alpha block.
+void AlphaPalette(const uint8_t* block, uint8_t alpha[8]) {
+  alpha[0] = block[0];
+  alpha[1] = block[1];
+  if (alpha[0] > alpha[1]) {
+    for (int i = 1; i < 7; ++i) alpha[i + 1] = uint8_t(((7 - i) * alpha[0] + i * alpha[1] + 3) / 7);
+  } else {
+    for (int i = 1; i < 5; ++i) alpha[i + 1] = uint8_t(((5 - i) * alpha[0] + i * alpha[1] + 2) / 5);
+    alpha[6] = 0;
+    alpha[7] = 255;
+  }
+}
+
+uint32_t AlphaIndex(const uint8_t* block, int texel) {
+  uint64_t bits = 0;
+  for (int i = 0; i < 6; ++i) bits |= uint64_t(block[2 + i]) << (8 * i);
+  return uint32_t(bits >> (3 * texel)) & 7;
+}
+
+}  // namespace
+
+bool DecodeToRGBA8(FileFormat format, const uint8_t* data, uint32_t pitch, uint32_t width,
+                   uint32_t height, std::vector<uint8_t>& rgba) {
+  rgba.assign(size_t(width) * height * 4, 0);
+  auto put = [&](uint32_t x, uint32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    if (x >= width || y >= height) return;
+    uint8_t* o = rgba.data() + (size_t(y) * width + x) * 4;
+    o[0] = r;
+    o[1] = g;
+    o[2] = b;
+    o[3] = a;
+  };
+  switch (format) {
+    case kFileFormatR8G8B8A8Unorm:
+      for (uint32_t y = 0; y < height; ++y) {
+        std::memcpy(rgba.data() + size_t(y) * width * 4, data + size_t(y) * pitch, width * 4);
+      }
+      return true;
+    case kFileFormatR8Unorm:
+      for (uint32_t y = 0; y < height; ++y)
+        for (uint32_t x = 0; x < width; ++x) {
+          const uint8_t v = data[size_t(y) * pitch + x];
+          put(x, y, v, v, v, 255);
+        }
+      return true;
+    case kFileFormatR8G8Unorm:
+      for (uint32_t y = 0; y < height; ++y)
+        for (uint32_t x = 0; x < width; ++x) {
+          const uint8_t* p = data + size_t(y) * pitch + x * 2;
+          put(x, y, p[0], p[1], 0, 255);
+        }
+      return true;
+    case kFileFormatB5G6R5Unorm:
+    case kFileFormatB5G5R5A1Unorm:
+    case kFileFormatB4G4R4A4Unorm:
+      for (uint32_t y = 0; y < height; ++y)
+        for (uint32_t x = 0; x < width; ++x) {
+          const uint16_t v = LoadLE16(data + size_t(y) * pitch + x * 2);
+          if (format == kFileFormatB5G6R5Unorm) {
+            put(x, y, Expand(v >> 11, 5), Expand((v >> 5) & 63, 6), Expand(v & 31, 5), 255);
+          } else if (format == kFileFormatB5G5R5A1Unorm) {
+            put(x, y, Expand((v >> 10) & 31, 5), Expand((v >> 5) & 31, 5), Expand(v & 31, 5),
+                (v & 0x8000) ? 255 : 0);
+          } else {
+            put(x, y, Expand((v >> 8) & 15, 4), Expand((v >> 4) & 15, 4), Expand(v & 15, 4),
+                Expand(v >> 12, 4));
+          }
+        }
+      return true;
+    case kFileFormatBc1Unorm:
+    case kFileFormatBc2Unorm:
+    case kFileFormatBc3Unorm:
+    case kFileFormatBc4Unorm: {
+      const uint32_t block_bytes =
+          (format == kFileFormatBc1Unorm || format == kFileFormatBc4Unorm) ? 8 : 16;
+      for (uint32_t by = 0; by < (height + 3) / 4; ++by)
+        for (uint32_t bx = 0; bx < (width + 3) / 4; ++bx) {
+          const uint8_t* block = data + size_t(by) * pitch + size_t(bx) * block_bytes;
+          uint8_t palette[4][4] = {};
+          uint8_t alpha[8] = {};
+          const uint8_t* color = block;
+          if (format == kFileFormatBc4Unorm) {
+            AlphaPalette(block, alpha);
+          } else if (format != kFileFormatBc1Unorm) {
+            color = block + 8;
+            if (format == kFileFormatBc3Unorm) AlphaPalette(block, alpha);
+          }
+          if (format != kFileFormatBc4Unorm) {
+            Bc1Palette(color, format == kFileFormatBc1Unorm, palette);
+          }
+          const uint32_t indices = uint32_t(color[4]) | uint32_t(color[5]) << 8 |
+                                   uint32_t(color[6]) << 16 | uint32_t(color[7]) << 24;
+          for (int t = 0; t < 16; ++t) {
+            const uint32_t x = bx * 4 + t % 4, y = by * 4 + t / 4;
+            if (format == kFileFormatBc4Unorm) {
+              const uint8_t v = alpha[AlphaIndex(block, t)];
+              put(x, y, v, v, v, 255);
+              continue;
+            }
+            const uint8_t* c = palette[(indices >> (2 * t)) & 3];
+            uint8_t a = c[3];
+            if (format == kFileFormatBc2Unorm) {
+              a = Expand((block[t / 2] >> (4 * (t & 1))) & 15, 4);
+            } else if (format == kFileFormatBc3Unorm) {
+              a = alpha[AlphaIndex(block, t)];
+            }
+            put(x, y, c[0], c[1], c[2], a);
+          }
+        }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+bool DumpBaseLevelPng(const std::filesystem::path& directory, const std::string& stem,
+                      const uint8_t* guest_base, const Description& key, uint32_t swizzle) {
+  std::vector<uint8_t> pixels;
+  uint32_t pitch = 0;
+  if (!ReadBaseLevel(guest_base, key, swizzle, pixels, &pitch)) {
+    return false;
+  }
+  std::vector<uint8_t> rgba;
+  if (!DecodeToRGBA8(FileFormatFor(key.format), pixels.data(), pitch, key.width, key.height,
+                     rgba)) {
+    return false;
+  }
+  GetPngWriter().Add(directory / (stem + ".png"), std::move(rgba), key.width, key.height);
+  return true;
+}
+
 FileFormat FileFormatFor(xenos::TextureFormat format) { return FileFormatForImpl(format); }
 
 namespace {
