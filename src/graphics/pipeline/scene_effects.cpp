@@ -250,10 +250,10 @@ REXCVAR_DEFINE_BOOL(scene_fx_underwater, false, "GPU/Effects",
                     "(before the HUD)") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_STRING(scene_fx_underwater_color, "0.55,0.85,1.0", "GPU/Effects",
                       "Underwater tint color as r,g,b (0...1)") REX_SCENE_FX_LIVE;
-REXCVAR_DEFINE_DOUBLE(scene_fx_underwater_strength, 0.6, "GPU/Effects",
+REXCVAR_DEFINE_DOUBLE(scene_fx_underwater_strength, 0.25, "GPU/Effects",
                       "Underwater tint strength (0...1)")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
-REXCVAR_DEFINE_DOUBLE(scene_fx_underwater_haze, 0.08, "GPU/Effects",
+REXCVAR_DEFINE_DOUBLE(scene_fx_underwater_haze, 0.15, "GPU/Effects",
                       "Underwater haze density per meter (0 = no haze)")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 // For tests: the underwater tint without the game's word.
