@@ -17,6 +17,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <utility>
 
 #include <chrono>
 #include <cmath>
@@ -25,6 +27,7 @@
 #include <rex/system/effect_timings.h>
 #include <rex/system/scene_camera.h>
 #include <rex/system/scene_hints.h>
+#include <rex/graphics/pipeline/texture/cache.h>
 #include <rex/graphics/registers.h>
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
@@ -163,6 +166,16 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_fog_brightness, 1.0, "GPU/Effects",
 REXCVAR_DEFINE_DOUBLE(scene_fx_fog_sun_glow, 0.5, "GPU/Effects",
                       "Sunlight the fog scatters (glow toward the sun)")
     .range(0.0, 4.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_fog_start, 0.0, "GPU/Effects",
+                      "Clear air around the camera: meters (along the ground) before the fog "
+                      "starts")
+    .range(0.0, 500.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_STRING(scene_fx_fog_color, "auto", "GPU/Effects",
+                      "Fog color: auto (the sky's), r,g,b (0...1) or one of white, blue, green, "
+                      "purple, orange, red") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_fog_tint, 0.0, "GPU/Effects",
+                      "How much the fog colors the scene in it, not only hazes it (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_fog_distance, 1000.0, "GPU/Effects",
                       "Distance of the sky through the fog, in meters")
     .range(50.0, 20000.0) REX_SCENE_FX_LIVE;
@@ -629,6 +642,19 @@ bool SceneEffects::MaterialTaggingActive(bool have_materials) {
         !REXCVAR_GET(scene_fx_contact_shadows_characters))) &&
       AnySceneEffectEnabled();
   return material_tagging_;
+}
+
+uint8_t SceneEffects::DrawMaterial(uint8_t textures_material, bool textured,
+                                   uint64_t vertex_shader_hash) {
+  constexpr uint8_t kCharacter = uint8_t(TextureCache::Material::kCharacter);
+  uint8_t material = textures_material;
+  if (!material && !textured && last_draw_material_ == kCharacter &&
+      vertex_shader_hash == last_draw_vertex_shader_) {
+    material = kCharacter;
+  }
+  last_draw_material_ = material;
+  last_draw_vertex_shader_ = vertex_shader_hash;
+  return material;
 }
 
 bool SceneEffects::TagMaterial(uint8_t material, reg::RB_DEPTHCONTROL& depth_control,
@@ -1996,6 +2022,22 @@ bool SceneEffects::FillFogConstants() {
   float glow = sun ? float(REXCVAR_GET(scene_fx_fog_sun_glow)) : 0.0f;
   for (uint32_t i = 0; i < 3; ++i) {
     composite_constants_[4][i] = tint[i] * glow;
+  }
+  composite_constants_[4][3] = WorldLength(REXCVAR_GET(scene_fx_fog_start));
+  composite_constants_[7][1] = float(REXCVAR_GET(scene_fx_fog_tint));
+  std::string fog_color = REXCVAR_GET(scene_fx_fog_color);
+  static const std::pair<const char*, const char*> kNamedFogColors[] = {
+      {"white", "0.9,0.9,0.9"},  {"blue", "0.55,0.7,1.0"},   {"green", "0.6,0.9,0.55"},
+      {"purple", "0.7,0.55,1.0"}, {"orange", "1.0,0.7,0.45"}, {"red", "1.0,0.5,0.45"},
+  };
+  for (const auto& [name, rgb] : kNamedFogColors) {
+    if (fog_color == name) {
+      fog_color = rgb;
+    }
+  }
+  if (!fog_color.empty() && fog_color != "auto") {
+    ParseColor(fog_color.c_str(), composite_constants_[9]);
+    composite_constants_[9][3] = 1.0f;
   }
   return true;
 }

@@ -305,6 +305,17 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
                ImGuiSliderFlags_Logarithmic);
     SliderCvar("Brightness", "scene_fx_fog_brightness", 0.0f, 2.0f);
     SliderCvar("Sun glow", "scene_fx_fog_sun_glow", 0.0f, 2.0f);
+    SliderCvar("Clear distance", "scene_fx_fog_start", 0.0f, 200.0f, "%.0f m");
+    Description("Meters along the ground from the camera before the fog starts.");
+    bool automatic_color = rex::cvar::GetFlagByName("scene_fx_fog_color") == "auto";
+    if (ImGui::Checkbox("Automatic color (the sky's)", &automatic_color)) {
+      rex::cvar::SetFlagByName("scene_fx_fog_color", automatic_color ? "auto" : "0.7,0.8,1.0");
+    }
+    if (!automatic_color) {
+      ColorCvar("Fog color", "scene_fx_fog_color");
+    }
+    SliderCvar("Scene tint", "scene_fx_fog_tint", 0.0f, 1.0f);
+    Description("How much the fog colors what's in it, not only hazes it.");
     ImGui::PopID();
   }
 

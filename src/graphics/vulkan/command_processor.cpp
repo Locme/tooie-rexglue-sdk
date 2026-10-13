@@ -3709,8 +3709,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     }
     auto front = regs.Get<reg::RB_STENCILREFMASK>();
     auto back = regs.Get<reg::RB_STENCILREFMASK>(XE_GPU_REG_RB_STENCILREFMASK_BF);
-    if (SceneEffects::TagMaterial(texture_cache_->FindMaterial(fetch_mask),
-                                  normalized_depth_control, front, back)) {
+    uint8_t material = scene_effects_->DrawMaterial(
+        texture_cache_->FindMaterial(fetch_mask), fetch_mask != 0,
+        vertex_shader ? vertex_shader->ucode_data_hash() : 0);
+    if (SceneEffects::TagMaterial(material, normalized_depth_control, front, back)) {
       stencil_override.Set(front, back);
     }
   }

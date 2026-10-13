@@ -46,7 +46,8 @@ FX_EXTRA_CONSTANTS_BLOCK(12) {
   float4 fx_fog_color;
   // xyz = toward the sun (view space), w = Henyey-Greenstein anisotropy.
   float4 fx_fog_sun;
-  // rgb = sunlight scattered by the fog relative to the sky's color.
+  // rgb = sunlight scattered by the fog relative to the sky's color, w = the
+  // clear distance around the camera, along the ground.
   float4 fx_fog_sun_color;
   // x = contact shadow strength, y = reflection intensity, z = bloom intensity,
   // w = toon outline strength.
@@ -54,11 +55,13 @@ FX_EXTRA_CONSTANTS_BLOCK(12) {
   // x = depth of field strength, y = rim light strength, zw = the rows the
   // 3D was drawn in on the screen (first, last), for the neighborhoods.
   float4 fx_effect_strengths_2;
-  // z = underwater tint strength, w = underwater
-  // haze density (per world unit).
+  // y = how much the fog colors the scene, z = underwater tint strength, w =
+  // underwater haze density (per world unit).
   float4 fx_effect_strengths_3;
   // rgb = the underwater tint's color.
   float4 fx_underwater_color;
+  // rgb = the fog's color in place of the sky's, when w = 1.
+  float4 fx_fog_custom_color;
 };
 
 // An effect at fx_effect_scale at this pixel: the pixel itself at full
@@ -183,6 +186,19 @@ float FxFogOpticalDepth(float3 direction, float distance) {
   return fx_fog_density.w * distance + at_camera * integral;
 }
 
+// The same past the clear distance around the camera (along the ground).
+float FxFogOpticalDepthPastStart(float3 direction, float distance) {
+  if (fx_fog_sun_color.w <= 0.0) {
+    return FxFogOpticalDepth(direction, distance);
+  }
+  float rise = dot(fx_fog_height.xyz, direction);
+  float start = fx_fog_sun_color.w / max(sqrt(saturate(1.0 - rise * rise)), 1.0e-3);
+  if (distance <= start) {
+    return 0.0;
+  }
+  return max(FxFogOpticalDepth(direction, distance) - FxFogOpticalDepth(direction, start), 0.0);
+}
+
 float4 main(float4 position : SV_Position) : SV_Target {
   float2 screen = position.xy * fx_output_scale + float2(fx_screen_offset);
   bool resolve = fx_composite_mode == FX_COMPOSITE_RESOLVE;
@@ -235,10 +251,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // Fog along the view ray to the surface (or the sky's distance).
   float fog_transmittance = 1.0;
   float3 fog_light = 0.0;
+  float3 fog_tint = 1.0;
   if (fx_effect_flags & FX_EFFECT_FOG) {
     float3 direction = normalize(FxViewPosition(screen, 1.0));
     float distance = is_sky ? fx_fog_color.w : depth / direction.z;
-    fog_transmittance = exp(-FxFogOpticalDepth(direction, distance));
+    fog_transmittance = exp(-FxFogOpticalDepthPastStart(direction, distance));
     // The sky only hazes over: thick fog along a long ray (a level high
     // above the fog's height, Cloud Cuckooland) otherwise replaced it with
     // the fog's color.
@@ -248,8 +265,15 @@ float4 main(float4 position : SV_Position) : SV_Target {
     float g = fx_fog_sun.w;
     float phase = (1.0 - g * g) /
                   pow(max(1.0 + g * g - 2.0 * g * dot(direction, fx_fog_sun.xyz), 1.0e-4), 1.5);
-    fog_light = (1.0 - fog_transmittance) * fx_sky.Load(int3(0, 0, 0)).rgb *
+    float3 fog_source =
+        fx_fog_custom_color.w > 0.0 ? fx_fog_custom_color.rgb : fx_sky.Load(int3(0, 0, 0)).rgb;
+    fog_light = (1.0 - fog_transmittance) * fog_source *
                 (fx_fog_color.rgb + fx_fog_sun_color.rgb * phase);
+    // The scene in the fog takes on its hue (not darker: brightest channel 1).
+    if (fx_effect_strengths_3.y > 0.0) {
+      float3 hue = fog_source / max(max(fog_source.r, max(fog_source.g, fog_source.b)), 1.0e-3);
+      fog_tint = lerp(1.0, hue, (1.0 - fog_transmittance) * fx_effect_strengths_3.y);
+    }
   }
 
   float3 shafts = 0.0;
@@ -344,7 +368,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     float d = 1.0 - saturate(log2(max(depth, 1.0)) / log2(max(fx_sky_distance, 2.0)));
     return float4(d, d, d, 1.0);
   }
-  float3 multiplier = (ao * contact + indirect) * fog_transmittance;
+  float3 multiplier = (ao * contact + indirect) * fog_transmittance * fog_tint;
   if (resolve) {
     if (fx_effect_flags & FX_EFFECT_DOF) {
       float3 blurred;

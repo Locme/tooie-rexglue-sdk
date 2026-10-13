@@ -60,6 +60,10 @@ class SceneEffects {
   // writes it; the guest's own stencil use is moved to bit 0 (Banjo-Tooie
   // uses it as one bit for its blob shadows). Changes the depth control and
   // the stencil reference and masks; false if the draw is left as is.
+  // The material to tag a draw with, from its textures' (0 = unknown): an
+  // untextured draw right after a character's, with the same vertex shader,
+  // is the same character (bodies are partly drawn in vertex colors only).
+  uint8_t DrawMaterial(uint8_t textures_material, bool textured, uint64_t vertex_shader_hash);
   static bool TagMaterial(uint8_t material, reg::RB_DEPTHCONTROL& depth_control,
                           reg::RB_STENCILREFMASK& front, reg::RB_STENCILREFMASK& back);
   // Puts TagMaterial's stencil reference and masks in the register file for
@@ -535,6 +539,9 @@ class SceneEffects {
   // bottom), 0 for the whole scene: the ambient occlusion doesn't take
   // occluders from the rows below, only guessed from the previous frame.
   uint32_t drawn_rows_ = 0;
+  // DrawMaterial: the last draw's material and vertex shader.
+  uint8_t last_draw_material_ = 0;
+  uint64_t last_draw_vertex_shader_ = 0;
   uint64_t image_frame_ = UINT64_MAX;
 
   // What was computed for the current frame, and at which resolution.
@@ -556,7 +563,7 @@ class SceneEffects {
   Texture volumetric_result_ = Texture::kVolumetric;
   // The composite's extra constants for this frame (the fog's, and the
   // effects' strengths).
-  float composite_constants_[9][4] = {};
+  float composite_constants_[10][4] = {};
 
   Camera camera_ = {};
   bool camera_logged_ = false;
