@@ -4,9 +4,14 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <thread>
+#include <mutex>
+#include <deque>
+#include <condition_variable>
 
 #include <rex/graphics/pipeline/texture/conversion.h>
 #include <rex/graphics/pipeline/texture/info.h>
+#include <rex/graphics/pipeline/texture/upscale.h>
 #include <rex/hash.h>
 #include <rex/ui/image_decode.h>
 
@@ -91,8 +96,12 @@ std::string FileStem(const Description& key, uint64_t hash) {
   return buffer;
 }
 
-bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& stem,
-                   const uint8_t* guest_base, const Description& key, uint32_t swizzle) {
+namespace {
+
+// The base level untiled and byte-swapped, rows of *pitch_out bytes (blocks
+// for the compressed formats), in the file's channel order.
+bool ReadBaseLevel(const uint8_t* guest_base, const Description& key, uint32_t swizzle,
+                   std::vector<uint8_t>& pixels, uint32_t* pitch_out) {
   if (key.dimension != xenos::DataDimension::k2DOrStacked || key.depth_or_array_size != 1) {
     return false;
   }
@@ -106,7 +115,7 @@ bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& st
   uint32_t blocks_x = (width + format_info->block_width - 1) / format_info->block_width;
   uint32_t blocks_y = (height + format_info->block_height - 1) / format_info->block_height;
   uint32_t out_pitch = blocks_x * bytes_per_block;
-  std::vector<uint8_t> pixels(size_t(out_pitch) * blocks_y);
+  pixels.assign(size_t(out_pitch) * blocks_y, 0);
   xenos::Endian endian = key.endian;
   if (key.tiled) {
     texture_conversion::UntileInfo untile = {};
@@ -130,20 +139,28 @@ bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& st
   if (dxgi_format == kFileFormatR8G8B8A8Unorm) {
     SwizzleRGBA8ToFileOrder(pixels.data(), pixels.size(), swizzle);
   }
+  *pitch_out = out_pitch;
+  return true;
+}
 
-  // DDS: magic, 124-byte header, 20-byte DX10 header, the base level.
+// DDS: magic, 124-byte header, 20-byte DX10 header, then the levels (data
+// holds them back to back; `pitch` and `linear_size` describe the first).
+bool WriteDds(const std::filesystem::path& directory, const std::string& stem,
+              uint32_t dxgi_format, bool compressed, uint32_t width, uint32_t height,
+              uint32_t mip_count, uint32_t pitch, uint32_t linear_size,
+              const std::vector<uint8_t>& data) {
   std::vector<uint8_t> file;
-  file.reserve(148 + pixels.size());
+  file.reserve(148 + data.size());
   WriteU32(file, 0x20534444);  // "DDS "
   WriteU32(file, 124);
-  bool compressed = format_info->type == FormatType::kCompressed;
-  // CAPS | HEIGHT | WIDTH | PIXELFORMAT | (PITCH or LINEARSIZE)
-  WriteU32(file, 0x1 | 0x2 | 0x4 | 0x1000 | (compressed ? 0x80000 : 0x8));
+  // CAPS | HEIGHT | WIDTH | PIXELFORMAT | (PITCH or LINEARSIZE) | MIPMAPCOUNT
+  WriteU32(file, 0x1 | 0x2 | 0x4 | 0x1000 | (compressed ? 0x80000 : 0x8) |
+                     (mip_count > 1 ? 0x20000 : 0));
   WriteU32(file, height);
   WriteU32(file, width);
-  WriteU32(file, compressed ? uint32_t(pixels.size()) : out_pitch);
+  WriteU32(file, compressed ? linear_size : pitch);
   WriteU32(file, 0);  // depth
-  WriteU32(file, 1);  // mip count
+  WriteU32(file, mip_count);
   for (int i = 0; i < 11; ++i) {
     WriteU32(file, 0);  // reserved
   }
@@ -154,7 +171,8 @@ bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& st
   for (int i = 0; i < 5; ++i) {
     WriteU32(file, 0);
   }
-  WriteU32(file, 0x1000);  // caps: TEXTURE
+  // caps: TEXTURE, plus COMPLEX | MIPMAP with mips.
+  WriteU32(file, 0x1000 | (mip_count > 1 ? 0x400008 : 0));
   for (int i = 0; i < 4; ++i) {
     WriteU32(file, 0);  // caps2..4, reserved2
   }
@@ -164,18 +182,163 @@ bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& st
   WriteU32(file, 0);  // misc flags
   WriteU32(file, 1);  // array size
   WriteU32(file, 0);  // misc flags 2 (alpha mode unknown)
-  file.insert(file.end(), pixels.begin(), pixels.end());
+  file.insert(file.end(), data.begin(), data.end());
 
   std::error_code error;
   std::filesystem::create_directories(directory, error);
+  // Written under a temporary name and renamed, so a reader never sees half
+  // a file.
   std::filesystem::path path = directory / (stem + ".dds");
-  FILE* f = std::fopen(path.string().c_str(), "wb");
+  std::filesystem::path temp = directory / (stem + ".dds.tmp");
+  FILE* f = std::fopen(temp.string().c_str(), "wb");
   if (!f) {
     return false;
   }
   bool ok = std::fwrite(file.data(), 1, file.size(), f) == file.size();
-  std::fclose(f);
+  ok = std::fclose(f) == 0 && ok;
+  if (ok) {
+    std::filesystem::rename(temp, path, error);
+    ok = !error;
+  }
+  if (!ok) {
+    std::filesystem::remove(temp, error);
+  }
   return ok;
+}
+
+}  // namespace
+
+bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& stem,
+                   const uint8_t* guest_base, const Description& key, uint32_t swizzle) {
+  std::vector<uint8_t> pixels;
+  uint32_t pitch = 0;
+  if (!ReadBaseLevel(guest_base, key, swizzle, pixels, &pitch)) {
+    return false;
+  }
+  const FormatInfo* format_info = FormatInfo::Get(key.format);
+  return WriteDds(directory, stem, FileFormatFor(key.format),
+                  format_info->type == FormatType::kCompressed, key.width, key.height, 1, pitch,
+                  uint32_t(pixels.size()), pixels);
+}
+
+bool CanUpscale(const Description& key) {
+  return key.dimension == xenos::DataDimension::k2DOrStacked && key.depth_or_array_size == 1 &&
+         FileFormatFor(key.format) == kFileFormatR8G8B8A8Unorm;
+}
+
+namespace {
+
+uint32_t LayOutLevels(Replacement& replacement);
+void FileFormatBlockInfo(FileFormat format, uint32_t& block_width, uint32_t& block_height,
+                         uint32_t& bytes_per_block);
+
+// An RGBA8 replacement of `base` (width x height) with a full mip chain.
+std::shared_ptr<Replacement> RGBA8WithMips(std::vector<uint8_t> base, uint32_t width,
+                                           uint32_t height) {
+  auto replacement = std::make_shared<Replacement>();
+  replacement->format = kFileFormatR8G8B8A8Unorm;
+  replacement->width = width;
+  replacement->height = height;
+  FileFormatBlockInfo(replacement->format, replacement->block_width, replacement->block_height,
+                      replacement->bytes_per_block);
+  std::vector<uint8_t> data = base;
+  std::vector<uint8_t> level = std::move(base);
+  uint32_t mip_count = 1, w = width, h = height;
+  while ((w > 1 || h > 1) && mip_count < Replacement::kMaxMips) {
+    uint32_t nw, nh;
+    level = texture_upscale::Downsample(level.data(), w, h, &nw, &nh);
+    data.insert(data.end(), level.begin(), level.end());
+    w = nw;
+    h = nh;
+    ++mip_count;
+  }
+  replacement->mip_count = mip_count;
+  LayOutLevels(*replacement);
+  replacement->data = std::move(data);
+  return replacement;
+}
+
+// One background thread writes the upscaled textures' PNG files, so the GPU
+// thread only pays for the upscale itself.
+class PngWriter {
+ public:
+  void Add(std::filesystem::path path, std::vector<uint8_t> rgba, uint32_t width,
+           uint32_t height) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    jobs_.push_back({std::move(path), std::move(rgba), width, height});
+    if (!thread_.joinable()) {
+      thread_ = std::thread([this] { Run(); });
+      thread_.detach();
+    }
+    wake_.notify_one();
+  }
+
+ private:
+  struct Job {
+    std::filesystem::path path;
+    std::vector<uint8_t> rgba;
+    uint32_t width, height;
+  };
+  void Run() {
+    for (;;) {
+      Job job;
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        wake_.wait(lock, [this] { return !jobs_.empty(); });
+        job = std::move(jobs_.front());
+        jobs_.pop_front();
+      }
+      const std::vector<uint8_t> png =
+          texture_upscale::EncodePng(job.rgba.data(), job.width, job.height);
+      std::error_code error;
+      std::filesystem::create_directories(job.path.parent_path(), error);
+      // Written under a temporary name and renamed, so a reader never sees
+      // half a file.
+      std::filesystem::path temp = job.path;
+      temp += ".tmp";
+      FILE* f = std::fopen(temp.string().c_str(), "wb");
+      if (!f) {
+        continue;
+      }
+      bool ok = std::fwrite(png.data(), 1, png.size(), f) == png.size();
+      ok = std::fclose(f) == 0 && ok;
+      if (ok) {
+        std::filesystem::rename(temp, job.path, error);
+      } else {
+        std::filesystem::remove(temp, error);
+      }
+    }
+  }
+  std::mutex mutex_;
+  std::condition_variable wake_;
+  std::deque<Job> jobs_;
+  std::thread thread_;
+};
+
+PngWriter& GetPngWriter() {
+  static PngWriter* writer = new PngWriter();  // never destroyed: its thread may still run
+  return *writer;
+}
+
+}  // namespace
+
+std::shared_ptr<Replacement> UpscaleBaseLevel(const uint8_t* guest_base, const Description& key,
+                                              uint32_t swizzle, uint32_t scale,
+                                              const std::filesystem::path& save_path) {
+  if (!CanUpscale(key)) {
+    return nullptr;
+  }
+  std::vector<uint8_t> pixels;
+  uint32_t pitch = 0;
+  if (!ReadBaseLevel(guest_base, key, swizzle, pixels, &pitch) || pitch != key.width * 4) {
+    return nullptr;
+  }
+  const uint32_t width = key.width * scale, height = key.height * scale;
+  std::vector<uint8_t> base = texture_upscale::Scale(pixels.data(), key.width, key.height, scale);
+  if (!save_path.empty()) {
+    GetPngWriter().Add(save_path, base, width, height);
+  }
+  return RGBA8WithMips(std::move(base), width, height);
 }
 
 FileFormat FileFormatFor(xenos::TextureFormat format) { return FileFormatForImpl(format); }
@@ -492,14 +655,9 @@ bool ParsePng(const std::vector<uint8_t>& file, Replacement& replacement, std::s
     error = "PNG decode failed";
     return false;
   }
-  replacement.format = kFileFormatR8G8B8A8Unorm;
-  replacement.width = uint32_t(width);
-  replacement.height = uint32_t(height);
-  replacement.mip_count = 1;
-  FileFormatBlockInfo(replacement.format, replacement.block_width, replacement.block_height,
-                      replacement.bytes_per_block);
-  LayOutLevels(replacement);
-  replacement.data = std::move(pixels);
+  // PNG files hold one level; the mip chain is made here (2x2 boxes), so a
+  // replacement doesn't shimmer in the distance.
+  replacement = *RGBA8WithMips(std::move(pixels), uint32_t(width), uint32_t(height));
   return true;
 }
 

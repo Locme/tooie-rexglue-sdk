@@ -22,6 +22,8 @@
 #include <unordered_set>
 
 #include <rex/graphics/pipeline/texture/cache.h>
+
+#include <chrono>
 #include <rex/graphics/pipeline/texture/files.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
@@ -88,6 +90,15 @@ REXCVAR_DEFINE_STRING(texture_replacements, "", "GPU",
                       "the dump_textures files; loaded in place of the game's textures "
                       "(may be larger and have more mip levels). Several folders may be "
                       "given separated by ';', the first one holding a file wins.");
+REXCVAR_DEFINE_INT32(texture_upscale, 1, "GPU",
+                     "Upscale the game's 8-bit RGBA textures 2 or 4 times with an edge-directed "
+                     "scaler (xBR-style) when no replacement file exists; 1 = off. Needs "
+                     "texture_upscale_cache");
+REXCVAR_DEFINE_STRING(texture_upscale_cache, "", "GPU",
+                      "Folder the upscaled textures are saved to (<scale>x/<name>.png), so each "
+                      "is upscaled once and loaded from disk after");
+REXCVAR_DEFINE_INT32(texture_upscale_max_size, 256, "GPU",
+                     "Largest texture width or height that texture_upscale upscales");
 
 
 // DEFINE_int32(
@@ -486,7 +497,10 @@ void TextureCache::DumpTextureIfRequested(const Texture& texture) {
 std::shared_ptr<const texture_files::Replacement> TextureCache::FindReplacement(
     const TextureKey& key, uint64_t* hash_out) {
   const std::string& root = REXCVAR_GET(texture_replacements);
-  if (root.empty()) {
+  const int32_t upscale = REXCVAR_GET(texture_upscale);
+  const std::string& upscale_cache = REXCVAR_GET(texture_upscale_cache);
+  const bool upscaling = (upscale == 2 || upscale == 4) && !upscale_cache.empty();
+  if (root.empty() && !upscaling) {
     return nullptr;
   }
   // 2D, non-array textures only, like the dumps.
@@ -529,6 +543,45 @@ std::shared_ptr<const texture_files::Replacement> TextureCache::FindReplacement(
       }
     }
     start = end + 1;
+  }
+  // texture_upscale: no file for it, so upscale it (once: a background thread
+  // saves it to the cache folder as PNG, loaded from there after).
+  if (!replacement && upscaling && texture_files::CanUpscale(description) &&
+      int32_t(std::max(description.width, description.height)) <=
+          REXCVAR_GET(texture_upscale_max_size) &&
+      std::min(description.width, description.height) >= 4) {
+    const std::filesystem::path directory =
+        std::filesystem::path(upscale_cache) / (std::to_string(upscale) + "x");
+    std::string error;
+    replacement = texture_files::LoadReplacement(directory, creating_replacement_stem_,
+                                                 guest_file_format, &error);
+    if (!replacement) {
+      // Textures the game rewrites all the time (new contents, new hash)
+      // would upscale and save every frame: past kUpscaleBurst new ones in
+      // two seconds, upscaling pauses for ten.
+      constexpr uint32_t kUpscaleBurst = 400;
+      const auto now = std::chrono::steady_clock::now();
+      if (now - upscale_window_start_ > std::chrono::seconds(2)) {
+        upscale_window_start_ = now;
+        upscale_window_count_ = 0;
+      }
+      if (now < upscale_paused_until_) {
+        return nullptr;  // not remembered: tried again after the pause
+      }
+      if (++upscale_window_count_ > kUpscaleBurst) {
+        upscale_paused_until_ = now + std::chrono::seconds(10);
+        REXGPU_WARN("Texture upscale: over {} new textures in 2 s, pausing for 10 s",
+                    kUpscaleBurst);
+        return nullptr;
+      }
+      replacement = texture_files::UpscaleBaseLevel(
+          guest_base, description, creating_swizzle_, uint32_t(upscale),
+          directory / (creating_replacement_stem_ + ".png"));
+      if (!replacement) {
+        REXGPU_WARN("Texture upscale: {} not upscaled{}{}", creating_replacement_stem_,
+                    error.empty() ? "" : ": ", error);
+      }
+    }
   }
   if (replacement) {
     replacement->guest_hash = hash;

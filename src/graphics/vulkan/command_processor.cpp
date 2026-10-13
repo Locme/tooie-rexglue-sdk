@@ -5451,15 +5451,18 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     // Submission already closed now, so minus 1.
     closed_frame_submissions_[(frame_current_++) % kMaxFramesInFlight] = GetCurrentSubmission() - 1;
 
-    // texture_replacements, live: a changed folder list (or a
+    // texture_replacements, live: a changed folder list or texture_upscale (or a
     // texture_files::RequestReload) drops the loaded replacements and the
     // textures, so they are looked up again.
     static uint64_t texture_reload_seen = 0;
     static std::string texture_replacements_seen = REXCVAR_GET(texture_replacements);
+    static int32_t texture_upscale_seen = REXCVAR_GET(texture_upscale);
     if (texture_files::ReloadGeneration() != texture_reload_seen ||
-        REXCVAR_GET(texture_replacements) != texture_replacements_seen) {
+        REXCVAR_GET(texture_replacements) != texture_replacements_seen ||
+        REXCVAR_GET(texture_upscale) != texture_upscale_seen) {
       texture_reload_seen = texture_files::ReloadGeneration();
       texture_replacements_seen = REXCVAR_GET(texture_replacements);
+      texture_upscale_seen = REXCVAR_GET(texture_upscale);
       ClearCaches();
     }
     if (cache_clear_requested_ && AwaitAllQueueOperationsCompletion()) {
