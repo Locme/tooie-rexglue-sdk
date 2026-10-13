@@ -26,6 +26,7 @@ REXCVAR_DECLARE(int32_t, draw_resolution_scale_y);
 REXCVAR_DECLARE(bool, resolve_resolution_scale_fill_half_pixel_offset);
 REXCVAR_DECLARE(bool, draw_resolution_scaled_texture_offsets);
 REXCVAR_DECLARE(std::string, readback_resolve);
+REXCVAR_DECLARE(std::string, texture_replacements);
 REXCVAR_DECLARE(bool, readback_resolve_half_pixel_offset);
 REXCVAR_DECLARE(bool, readback_memexport);
 REXCVAR_DECLARE(bool, readback_memexport_fast);
