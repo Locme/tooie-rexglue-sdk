@@ -8,11 +8,10 @@
 // where nothing is known. Output: rgb = reflected light, a = confidence.
 //
 // Water (scene_fx_water_reflections): the game tells the heights of the water
-// in view (up to 4), and the water writes depth, so a pixel whose surface
-// lies on one of those planes (and is seen from above) is water: it reflects
-// about the plane's normal, rippled, and what it misses reflects the sky.
-// Dry ground below the water's height doesn't. Intensities are applied here:
-// the composite adds as is.
+// around the camera (up to 4), so wherever the view ray crosses one of those
+// planes from above before reaching the surface in the depth buffer, it
+// reflects about the plane's normal, rippled, and what it misses reflects the
+// sky. Intensities are applied here: the composite adds as is.
 
 #include "scene_fx_common.hlsli"
 
@@ -84,17 +83,16 @@ void main(uint3 id : SV_DispatchThreadID) {
   float reflectance = fx_ssr_params.w;
   float strength = fx_ssr_water.z;
   float descent = dot(view, up_axis);
-  if (fx_ssr_water.y > 0.0 && descent < -1.0e-3 && !is_sky) {
-    // The plane the surface lies on: its height is within a little of the
-    // level (the drawn water sits a bit off its collision plane).
+  if (fx_ssr_water.y > 0.0 && descent < -1.0e-3) {
+    // The nearest water plane the view ray crosses before it reaches the
+    // surface the depth has (the water itself may not write depth).
     float surface = length(position);
-    float height = dot(position, up_axis);
-    float tolerance = max(0.01 * surface, 40.0);
     float crossing = -1.0;
     [unroll] for (int level = 0; level < 4; ++level) {
-      if (fx_ssr_water_levels[level] < 0.0 &&
-          abs(height - fx_ssr_water_levels[level]) <= tolerance) {
-        crossing = fx_ssr_water_levels[level] / descent;
+      float level_crossing = fx_ssr_water_levels[level] / descent;
+      if (fx_ssr_water_levels[level] < 0.0 && level_crossing <= surface * 1.01 + 1.0 &&
+          (crossing < 0.0 || level_crossing < crossing)) {
+        crossing = level_crossing;
       }
     }
     if (crossing > 0.0) {
