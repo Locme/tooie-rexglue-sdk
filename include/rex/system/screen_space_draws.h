@@ -20,4 +20,12 @@ namespace rex::system {
 void SetScreenSpaceDrawScale(float x_scale);
 float GetScreenSpaceDrawScale();
 
+// Edges mode: a narrowed draw that lies wholly on the left of the screen's
+// center is moved out to the left edge, one wholly on the right to the right
+// edge (it keeps its narrowed width), so corner HUD elements sit in the
+// window's corners; a draw across the center stays in the middle. Off (the
+// default) narrows everything about the center. Thread-safe.
+void SetScreenSpaceDrawEdges(bool edges);
+bool GetScreenSpaceDrawEdges();
+
 }  // namespace rex::system

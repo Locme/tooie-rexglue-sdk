@@ -616,6 +616,7 @@ void ApplyScreenSpaceDrawScale(const RegisterFile& regs, const memory::Memory& m
     }
   }
   const uint32_t* vertices = memory.TranslatePhysical<const uint32_t*>(fetch.address << 2);
+  float min_x = 1.0f, max_x = -1.0f;
   for (uint32_t i = 0; i < index_count; ++i) {
     uint32_t vertex_index;
     if (indices_16) {
@@ -638,9 +639,23 @@ void ApplyScreenSpaceDrawScale(const RegisterFile& regs, const memory::Memory& m
     if (!(std::abs(x) < 0.999f)) {
       return skip("touches the screen's edge");
     }
+    min_x = std::min(min_x, x);
+    max_x = std::max(max_x, x);
   }
-  skip("narrowed");
+  // Edges mode: a draw wholly on one side of the center keeps its distance
+  // from that side's edge (guest x -1 or 1 stays where it was).
+  float shift = 0.0f;
+  if (rex::system::GetScreenSpaceDrawEdges()) {
+    if (max_x < 0.0f) {
+      shift = -1.0f;
+    } else if (min_x > 0.0f) {
+      shift = 1.0f;
+    }
+  }
+  skip(shift < 0.0f ? "narrowed, to the left edge"
+                    : shift > 0.0f ? "narrowed, to the right edge" : "narrowed");
   // Guest NDC 0 (the screen's center) stays at ndc_offset.
+  viewport_info.ndc_offset[0] += shift * viewport_info.ndc_scale[0] * (1.0f - x_scale);
   viewport_info.ndc_scale[0] *= x_scale;
 }
 

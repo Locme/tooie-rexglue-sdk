@@ -15,6 +15,7 @@ namespace rex::system {
 namespace {
 
 std::atomic<float> g_screen_space_draw_scale{1.0f};
+std::atomic<bool> g_screen_space_draw_edges{false};
 
 }  // namespace
 
@@ -24,6 +25,14 @@ void SetScreenSpaceDrawScale(float x_scale) {
 
 float GetScreenSpaceDrawScale() {
   return g_screen_space_draw_scale.load(std::memory_order_relaxed);
+}
+
+void SetScreenSpaceDrawEdges(bool edges) {
+  g_screen_space_draw_edges.store(edges, std::memory_order_relaxed);
+}
+
+bool GetScreenSpaceDrawEdges() {
+  return g_screen_space_draw_edges.load(std::memory_order_relaxed);
 }
 
 }  // namespace rex::system
