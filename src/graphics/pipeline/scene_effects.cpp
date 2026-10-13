@@ -247,6 +247,19 @@ REXCVAR_DEFINE_INT32(scene_fx_brightness, 100, "GPU/Effects",
                      "Display brightness in percent (a gamma for your screen, apart from color "
                      "grading): above 100 brightens the darks and midtones")
     .range(50, 200) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_eye_adaptation, false, "GPU/Effects",
+                    "Eye adaptation: dark places brightened and bright ones toned down over a "
+                    "moment, like eyes adjusting")
+    REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_eye_adaptation_strength, 0.6, "GPU/Effects",
+                      "Eye adaptation strength (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_eye_adaptation_speed, 1.0, "GPU/Effects",
+                      "Eye adaptation speed (1 = about a second to adjust)")
+    .range(0.25, 4.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_eye_adaptation_key, 0.18, "GPU/Effects",
+                      "Eye adaptation: the average brightness (linear) it adapts toward")
+    .range(0.05, 0.5) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_grading_gamma, 1.0, "GPU/Effects",
                       "Gamma: above 1 brightens the midtones")
     .range(0.5, 2.0) REX_SCENE_FX_LIVE;
@@ -363,6 +376,17 @@ struct ReflectionConstants {
   float params[4];
 };
 
+struct ExposureConstants {
+  // Measure: the rectangle measured, in the image's pixels.
+  int32_t rect[4];
+  // x = this tile's texel (measure), y = tiles measured last frame (adapt),
+  // z = adaptation rate brightening, w = darkening (0...1 this frame).
+  float params[4];
+  // x = log2 of the brightness adapted toward, y = strength, z = darkest and
+  // w = brightest correction (stops).
+  float range[4];
+};
+
 struct ImageConstants {
   float sharpen[4];
   float grade[4];
@@ -372,6 +396,8 @@ struct ImageConstants {
   float colorblind[4];
   float area[4];
   float screen[4];
+  // x = 1 to apply the adapted exposure (t1).
+  float exposure[4];
 };
 
 // fx_effect_flags, scene_fx_debug and fx_composite_mode, as in
@@ -463,6 +489,9 @@ const SceneEffects::TextureInfo
         {TextureFormat::kRGBA16Float, 1, false},                // kBloom
         {TextureFormat::kRGBA16Float, 1, false},                // kDofBright
         {TextureFormat::kRGBA16Float, 1, false},                // kDof
+        {TextureFormat::kRGBA16Float, 1, true},                 // kExposureTiles
+        {TextureFormat::kRGBA16Float, 1, true},                 // kExposure0
+        {TextureFormat::kRGBA16Float, 1, true},                 // kExposure1
 };
 
 const SceneEffects::PipelineInfo
@@ -491,6 +520,8 @@ const SceneEffects::PipelineInfo
         {2, true, false, 1},   // kSmaaBlend
         {1, false, true, 1},   // kBloomPrefilter
         {1, false, true, 1},   // kBloomBlur
+        {1, false, true, 1},   // kExposureMeasure
+        {2, false, true, 1},   // kExposureAdapt
 };
 
 SceneEffects::SceneEffects(RenderTargetCache& render_target_cache,
@@ -536,7 +567,8 @@ bool SceneEffects::AnyImageEffectEnabled() {
   return REXCVAR_GET(scene_fx_sharpen) || REXCVAR_GET(scene_fx_grading) ||
          REXCVAR_GET(scene_fx_smaa) || REXCVAR_GET(scene_fx_retro_16bit_color) ||
          REXCVAR_GET(scene_fx_retro_crt) || REXCVAR_GET(scene_fx_colorblind) > 0 ||
-         REXCVAR_GET(scene_fx_cinematic) || REXCVAR_GET(scene_fx_brightness) != 100;
+         REXCVAR_GET(scene_fx_cinematic) || REXCVAR_GET(scene_fx_brightness) != 100 ||
+         REXCVAR_GET(scene_fx_eye_adaptation);
 }
 
 bool SceneEffects::SunShadowsNeeded() {
@@ -1330,6 +1362,9 @@ bool SceneEffects::EnsureSceneTextures(uint32_t width, uint32_t height) {
       case Texture::kSmaaEdges:
       case Texture::kSmaaWeights:
       case Texture::kSmaaImage:
+      case Texture::kExposureTiles:
+      case Texture::kExposure0:
+      case Texture::kExposure1:
         // Their own sizes.
         continue;
       default:
@@ -2146,8 +2181,12 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
   bool cinematic =
       REXCVAR_GET(scene_fx_cinematic) && (letterboxed || REXCVAR_GET(scene_fx_photo_mode));
   float brightness = float(REXCVAR_GET(scene_fx_brightness)) * 0.01f;
+  bool eye_adaptation = REXCVAR_GET(scene_fx_eye_adaptation);
+  if (!eye_adaptation) {
+    exposure_valid_ = false;
+  }
   if (!sharpen && !grading && !smaa && !retro_color && !crt && colorblind <= 0 && !cinematic &&
-      brightness == 1.0f) {
+      brightness == 1.0f && !eye_adaptation) {
     return;
   }
   TimingScope timing(*this, TimedSection::kImage);
@@ -2171,7 +2210,18 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
   if (smaa && ApplySmaa(&constants, rect, width, height)) {
     image = Texture::kSmaaImage;
   }
+  Texture exposure = Texture::kCount;
+  if (eye_adaptation) {
+    // Measured within the 3D's area (not the letterbox bars), in this tile's
+    // render target pixels.
+    Rect measured = {std::max(rect.left, area.left - screen_offset_x),
+                     std::max(rect.top, area.top - screen_offset_y),
+                     std::min(rect.right, area.right - screen_offset_x),
+                     std::min(rect.bottom, area.bottom - screen_offset_y)};
+    exposure = UpdateEyeAdaptation(image, rect, measured);
+  }
   ImageConstants ic = {};
+  ic.exposure[0] = exposure != Texture::kCount ? 1.0f : 0.0f;
   ic.sharpen[0] = float(REXCVAR_GET(scene_fx_sharpen_amount));
   ic.sharpen[1] = sharpen ? 1.0f : 0.0f;
   ic.grade[0] = ic.grade[1] = ic.grade[2] = 1.0f;
@@ -2220,7 +2270,63 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
         "{}) on {}x{}",
         image == Texture::kSmaaImage, sharpen, grading, retro_color, crt, width, height);
   }
-  DrawFullscreen(Draw::kImage, color_rt, rect, {Source(image)}, &constants, &ic, sizeof(ic));
+  // t1 unused (the image again) without eye adaptation.
+  DrawFullscreen(Draw::kImage, color_rt, rect,
+                 {Source(image), Source(exposure != Texture::kCount ? exposure : image)},
+                 &constants, &ic, sizeof(ic));
+}
+
+SceneEffects::Texture SceneEffects::UpdateEyeAdaptation(Texture image, const Rect& rect,
+                                                        const Rect& area) {
+  if (!EnsureTexture(Texture::kExposureTiles, kMaxSdrTiles, 1) ||
+      !EnsureTexture(Texture::kExposure0, 1, 1) || !EnsureTexture(Texture::kExposure1, 1, 1)) {
+    return Texture::kCount;
+  }
+  FxConstants constants;
+  FillConstants(&constants, 0, 0);
+  ExposureConstants ec = {};
+  ec.range[0] = std::log2(float(REXCVAR_GET(scene_fx_eye_adaptation_key)));
+  ec.range[1] = float(REXCVAR_GET(scene_fx_eye_adaptation_strength));
+  ec.range[2] = -1.0f;
+  ec.range[3] = 1.5f;
+  uint64_t frame = GetCurrentFrame();
+  if (exposure_frame_ != frame) {
+    // The frame's first image: adapt toward what the previous frame measured
+    // (its tiles together), at a rate from the time since then - faster
+    // toward darker, as eyes adjust to light faster than to the dark.
+    auto now = std::chrono::steady_clock::now();
+    float seconds = exposure_valid_ ? std::chrono::duration<float>(now - exposure_time_).count()
+                                    : 0.0f;
+    seconds = std::clamp(seconds, 0.0f, 0.25f);
+    float speed = float(REXCVAR_GET(scene_fx_eye_adaptation_speed));
+    ec.params[1] = float(exposure_valid_ ? exposure_tile_count_ : 0);
+    ec.params[2] = 1.0f - std::exp(-seconds * speed / 1.2f);
+    ec.params[3] = 1.0f - std::exp(-seconds * speed / 0.5f);
+    Texture previous = exposure_index_ ? Texture::kExposure1 : Texture::kExposure0;
+    Texture next = exposure_index_ ? Texture::kExposure0 : Texture::kExposure1;
+    if (!Dispatch(Pipeline::kExposureAdapt, {Source(Texture::kExposureTiles), Source(previous)},
+                  {Target(next)}, &constants, &ec, sizeof(ec), 1, 1)) {
+      return Texture::kCount;
+    }
+    exposure_index_ ^= 1;
+    exposure_frame_ = frame;
+    exposure_time_ = now;
+    exposure_tile_count_ = 0;
+    exposure_valid_ = true;
+  }
+  if (exposure_tile_count_ < kMaxSdrTiles && area.right > area.left && area.bottom > area.top) {
+    ec.rect[0] = area.left;
+    ec.rect[1] = area.top;
+    ec.rect[2] = area.right;
+    ec.rect[3] = area.bottom;
+    ec.params[0] = float(exposure_tile_count_);
+    // One 16x16 group.
+    if (Dispatch(Pipeline::kExposureMeasure, {Source(image)}, {Target(Texture::kExposureTiles)},
+                 &constants, &ec, sizeof(ec), 1, 1)) {
+      ++exposure_tile_count_;
+    }
+  }
+  return exposure_index_ ? Texture::kExposure1 : Texture::kExposure0;
 }
 
 bool SceneEffects::EnsureImageTexture(Texture texture, uint32_t width, uint32_t height) {
