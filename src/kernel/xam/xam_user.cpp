@@ -376,7 +376,8 @@ u32 XamUserWriteProfileSettings_entry(u32 title_id, u32 user_index, u32 setting_
 
   if (user_index) {
     // Only user 0 has a profile: the local players' writes are dropped.
-    const X_RESULT result = LocalPlayerSignedIn(user_index) ? X_ERROR_SUCCESS : X_ERROR_NO_SUCH_USER;
+    const X_RESULT result =
+        LocalPlayerSignedIn(user_index) ? X_ERROR_SUCCESS : X_ERROR_NO_SUCH_USER;
     if (overlapped) {
       REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped.guest_address(), result);
       return X_ERROR_IO_PENDING;
