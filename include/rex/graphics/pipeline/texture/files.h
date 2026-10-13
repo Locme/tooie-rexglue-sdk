@@ -127,6 +127,17 @@ bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& st
                    const uint8_t* guest_base, const Description& description,
                    uint32_t swizzle = kIdentitySwizzle);
 
+// texture_upscale: whether a guest texture can be upscaled (2D, 8_8_8_8).
+bool CanUpscale(const Description& description);
+// The base level upscaled `scale` times (2 or 4, texture_upscale::Scale) as an
+// R8G8B8A8 replacement in the file channel order of `swizzle`, with a full
+// mip chain. Unless `save_path` is empty, the base level is also written
+// there as a PNG file by a background thread (temporary name, then renamed).
+std::shared_ptr<Replacement> UpscaleBaseLevel(const uint8_t* guest_base,
+                                              const Description& description, uint32_t swizzle,
+                                              uint32_t scale,
+                                              const std::filesystem::path& save_path);
+
 // texture_replacements, live: asks the GPU thread to drop its loaded
 // replacements and its textures at the end of the current frame, so the
 // replacement folders are looked up again (e.g. after the files changed or

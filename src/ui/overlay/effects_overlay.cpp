@@ -311,13 +311,15 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
   if (EffectHeader("Reflections", "scene_fx_reflections")) {
     ImGui::PushID("reflections");
     Description(
-        "Screen-space reflections. The game doesn't say which surfaces are glossy, so all "
-        "reflect a little, most at grazing angles - or only floors and streets.");
+        "Screen-space reflections, on the game's water only. Untick 'Only reflective "
+        "materials' and every surface reflects a little, most at grazing angles - or only "
+        "floors.");
     ComboCvar("Quality", "scene_fx_reflections_quality", kQualities, kQualityValues, 4);
     SliderCvar("Strength", "scene_fx_reflections_intensity", 0.0f, 4.0f);
     SliderCvar("Shininess", "scene_fx_reflections_reflectance", 0.0f, 0.5f, "%.3f",
                ImGuiSliderFlags_Logarithmic);
     SliderCvar("Distance", "scene_fx_reflections_distance", 2.0f, 100.0f, "%.0f m");
+    CheckboxCvar("Only reflective materials (water)", "scene_fx_reflections_materials");
     CheckboxCvar("Floors only", "scene_fx_reflections_floors_only");
     ImGui::PopID();
   }
@@ -379,16 +381,6 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     ImGui::PushID("toon");
     Description("Dark cartoon lines along the silhouettes and creases of the scene, before the HUD.");
     SliderCvar("Darkness", "scene_fx_toon_strength", 0.0f, 1.0f);
-    ImGui::PopID();
-  }
-
-  if (HasCvar("scene_fx_smooth") && EffectHeader("Smooth Triangles", "scene_fx_smooth")) {
-    ImGui::PushID("smooth");
-    Description(
-        "Rounds off the faceted look of low-poly models: each pixel is lit as if the normals "
-        "were smoothed across neighboring triangles, so the creases between flat faces blend "
-        "into curves. Before the HUD.");
-    SliderCvar("Strength", "scene_fx_smooth_strength", 0.0f, 1.0f);
     ImGui::PopID();
   }
 

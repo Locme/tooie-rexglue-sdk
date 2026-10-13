@@ -10,15 +10,18 @@
 #include <rex/system/scene_hints.h>
 
 #include <atomic>
+#include <algorithm>
 #include <cmath>
+#include <mutex>
 
 namespace rex::system {
 
 namespace {
 
 std::atomic<bool> g_underwater{false};
-// NaN = no water level.
-std::atomic<float> g_water_level{NAN};
+std::mutex g_water_mutex;
+float g_water_levels[kMaxSceneWaterLevels];
+int g_water_level_count = 0;
 
 }  // namespace
 
@@ -28,17 +31,33 @@ void SetSceneUnderwater(bool underwater) {
 
 bool GetSceneUnderwater() { return g_underwater.load(std::memory_order_relaxed); }
 
-void SetSceneWaterLevel(float height) { g_water_level.store(height, std::memory_order_relaxed); }
+void SetSceneWaterLevel(float height) { SetSceneWaterLevels(&height, 1); }
 
-void ClearSceneWaterLevel() { g_water_level.store(NAN, std::memory_order_relaxed); }
+void ClearSceneWaterLevel() { SetSceneWaterLevels(nullptr, 0); }
 
 bool GetSceneWaterLevel(float& height_out) {
-  float height = g_water_level.load(std::memory_order_relaxed);
-  if (std::isnan(height)) {
+  float heights[kMaxSceneWaterLevels];
+  if (!GetSceneWaterLevels(heights)) {
     return false;
   }
-  height_out = height;
+  height_out = heights[0];
   return true;
+}
+
+void SetSceneWaterLevels(const float* heights, int count) {
+  std::lock_guard<std::mutex> lock(g_water_mutex);
+  g_water_level_count = 0;
+  for (int i = 0; i < count && g_water_level_count < kMaxSceneWaterLevels; ++i) {
+    if (std::isfinite(heights[i])) {
+      g_water_levels[g_water_level_count++] = heights[i];
+    }
+  }
+}
+
+int GetSceneWaterLevels(float* heights_out) {
+  std::lock_guard<std::mutex> lock(g_water_mutex);
+  std::copy(g_water_levels, g_water_levels + g_water_level_count, heights_out);
+  return g_water_level_count;
 }
 
 }  // namespace rex::system

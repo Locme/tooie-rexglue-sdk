@@ -12,6 +12,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -641,6 +642,11 @@ class TextureCache {
   // texture_replacements: files looked up by guest data hash (null = none).
   std::unordered_map<uint64_t, std::shared_ptr<const texture_files::Replacement>> replacements_;
   // Set around the CreateTexture call for the Texture constructor to pick up.
+  // texture_upscale: new upscales in the current two-second window, and a
+  // pause after a burst (textures the game keeps rewriting).
+  std::chrono::steady_clock::time_point upscale_window_start_{};
+  uint32_t upscale_window_count_ = 0;
+  std::chrono::steady_clock::time_point upscale_paused_until_{};
   std::shared_ptr<const texture_files::Replacement> creating_replacement_;
   std::string creating_replacement_stem_;
   // The fetch constant swizzle of the binding a texture is being created for.

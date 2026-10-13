@@ -9,7 +9,7 @@
 // - Debug: replaces the color with one effect.
 // - Resolve: both at once on a 16-bit copy of the scene, dithered back to the
 //   8-bit target (scene_fx_16bit), with the bloom, the toon outlines, the rim
-//   light, the smooth shading, the underwater tint and the cutscene depth of
+//   light, the underwater tint and the cutscene depth of
 //   field.
 // The fog is exponential height fog integrated analytically per pixel at full
 // resolution (no ray marching), lit by the sky and with a glow toward the sun.
@@ -54,7 +54,7 @@ FX_EXTRA_CONSTANTS_BLOCK(12) {
   // x = depth of field strength, y = rim light strength, zw = the rows the
   // 3D was drawn in on the screen (first, last), for the neighborhoods.
   float4 fx_effect_strengths_2;
-  // x = smooth shading strength, z = underwater tint strength, w = underwater
+  // z = underwater tint strength, w = underwater
   // haze density (per world unit).
   float4 fx_effect_strengths_3;
   // rgb = the underwater tint's color.
@@ -160,65 +160,6 @@ float FxOutline(int2 pixel, float depth) {
     crease = max(crease, abs(a + b - 2.0 * inv_depth) / inv_depth);
   }
   return max(silhouette, smoothstep(0.03, 0.08, crease));
-}
-
-// The view space position of a scene pixel (clamped to the 3D's rows).
-float3 FxPixelPosition(int2 pixel) {
-  int2 first = int2(0, int(fx_effect_strengths_2.z));
-  int2 last = int2(int(fx_scene_size.x) - 1, int(fx_effect_strengths_2.w));
-  pixel = clamp(pixel, first, last);
-  return FxViewPosition(float2(pixel) + 0.5, fx_depth.Load(int3(pixel, 0)));
-}
-
-// The surface normal at a pixel from the depth (facing the camera), per axis
-// from the side with the smaller depth step: one triangle's flat normal.
-float3 FxFlatNormal(int2 pixel, float3 position) {
-  float3 right = FxPixelPosition(pixel + int2(1, 0)) - position;
-  float3 left = position - FxPixelPosition(pixel - int2(1, 0));
-  float3 down = FxPixelPosition(pixel + int2(0, 1)) - position;
-  float3 up = position - FxPixelPosition(pixel - int2(0, 1));
-  float3 normal = cross(abs(down.z) < abs(up.z) ? down : up,
-                        abs(right.z) < abs(left.z) ? right : left);
-  normal *= rsqrt(max(dot(normal, normal), 1.0e-20));
-  return dot(normal, position) > 0.0 ? -normal : normal;
-}
-
-// Smooth shading (a multiplier of the color): low-poly models are lit as if
-// their normals were interpolated across the triangles (Phong-style) rather
-// than flat - the flat normals of the surrounding pixels on the same surface
-// (similar depth) averaged, and the pixel relit by how much more or less the
-// averaged normal faces the light (the sun, or the sky above) than its own
-// triangle. Creases between faces blend into curves; flat floors and walls
-// (all neighbors the same normal) stay as they are.
-float FxSmoothShading(int2 pixel, float depth) {
-  float3 light = dot(fx_fog_sun.xyz, fx_fog_sun.xyz) > 0.5 ? fx_fog_sun.xyz : fx_fog_height.xyz;
-  if (dot(light, light) < 0.5) {
-    return 1.0;
-  }
-  float3 position = FxViewPosition(float2(pixel) + 0.5, depth);
-  float3 flat_normal = FxFlatNormal(pixel, position);
-  // About 6 pixels at 720p: wider than a crease, narrower than a small model.
-  int radius = max(2, int(fx_scene_size.y + 60u) / 120);
-  const int2 kDirections[8] = {int2(-1, -1), int2(0, -1), int2(1, -1), int2(-1, 0),
-                               int2(1, 0),   int2(-1, 1), int2(0, 1),  int2(1, 1)};
-  float3 smooth_normal = flat_normal;
-  [unroll] for (int ring = 1; ring <= 2; ++ring) {
-    [unroll] for (int i = 0; i < 8; ++i) {
-      int2 neighbor_pixel = pixel + kDirections[i] * (radius * ring / 2);
-      float3 neighbor = FxPixelPosition(neighbor_pixel);
-      // The same surface: close to the pixel in depth (not the background
-      // behind a silhouette, nor something in front).
-      float weight = saturate(1.0 - abs(neighbor.z - depth) / (0.04 * depth + 1.0e-3));
-      if (weight > 0.0) {
-        smooth_normal += FxFlatNormal(neighbor_pixel, neighbor) * weight;
-      }
-    }
-  }
-  smooth_normal = normalize(smooth_normal);
-  // Half-Lambert: a soft light with no black side.
-  float smooth_light = 0.55 + 0.45 * dot(smooth_normal, light);
-  float flat_light = 0.55 + 0.45 * dot(flat_normal, light);
-  return clamp(smooth_light / max(flat_light, 0.1), 0.7, 1.4);
 }
 
 // Jimenez et al. 2016: visibility to occlusion including interreflections.
@@ -409,9 +350,6 @@ float4 main(float4 position : SV_Position) : SV_Target {
       float3 blurred;
       FX_SAMPLE_QUARTER(fx_dof, screen, blurred)
       scene = lerp(scene, blurred, FxDofAmount(depth) * fx_effect_strengths_2.x);
-    }
-    if ((fx_effect_flags & FX_EFFECT_SMOOTH) && !is_sky) {
-      scene *= lerp(1.0, FxSmoothShading(pixel, depth), fx_effect_strengths_3.x);
     }
     float3 lit = scene * multiplier + added;
     if (fx_effect_flags & FX_EFFECT_BLOOM) {

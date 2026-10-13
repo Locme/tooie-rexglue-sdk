@@ -82,8 +82,9 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_contact_shadows_strength, 0.6, "GPU/Effects",
 
 // Screen-space reflections.
 REXCVAR_DEFINE_BOOL(scene_fx_reflections, false, "GPU/Effects",
-                    "Screen-space reflections (the game doesn't say which surfaces are "
-                    "glossy, so all reflect a little, most at grazing angles)")
+                    "Screen-space reflections (on the game's water only, unless "
+                    "scene_fx_reflections_materials is off: then all surfaces reflect a little, "
+                    "most at grazing angles)")
     REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_INT32(scene_fx_reflections_quality, 2, "GPU/Effects",
                      "Reflection quality: 0 = low, 1 = medium, 2 = high, 3 = ultra")
@@ -101,6 +102,10 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_reflections_thickness, 0.5, "GPU/Effects",
     .range(0.05, 5.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_reflections_floors_only, false, "GPU/Effects",
                     "Reflect only on upward-facing surfaces (floors, wet streets)")
+    REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_reflections_materials, true, "GPU/Effects",
+                    "Reflect only on the surfaces the game says are reflective (its water, "
+                    "rex::system::SetSceneWaterLevels); off: every surface reflects a little")
     REX_SCENE_FX_LIVE;
 
 // Volumetric lighting.
@@ -238,14 +243,6 @@ REXCVAR_DEFINE_BOOL(scene_fx_water_reflections, false, "GPU/Effects",
 REXCVAR_DEFINE_DOUBLE(scene_fx_water_reflections_strength, 1.5, "GPU/Effects",
                       "Water reflection strength (0...2)")
     .range(0.0, 2.0) REX_SCENE_FX_LIVE;
-// Smooth shading (roadmap: L's "smooth triangles").
-REXCVAR_DEFINE_BOOL(scene_fx_smooth, false, "GPU/Effects",
-                    "Smooth shading: low-poly models lit as if their normals were interpolated "
-                    "across the triangles, so the creases between flat faces blend into curves "
-                    "(screen space, before the HUD)") REX_SCENE_FX_LIVE;
-REXCVAR_DEFINE_DOUBLE(scene_fx_smooth_strength, 0.7, "GPU/Effects",
-                      "Smooth shading strength (0...1)")
-    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 // Underwater tint, while the game says the camera is underwater
 // (rex::system::SetSceneUnderwater).
 REXCVAR_DEFINE_BOOL(scene_fx_underwater, false, "GPU/Effects",
@@ -253,10 +250,10 @@ REXCVAR_DEFINE_BOOL(scene_fx_underwater, false, "GPU/Effects",
                     "(before the HUD)") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_STRING(scene_fx_underwater_color, "0.55,0.85,1.0", "GPU/Effects",
                       "Underwater tint color as r,g,b (0...1)") REX_SCENE_FX_LIVE;
-REXCVAR_DEFINE_DOUBLE(scene_fx_underwater_strength, 0.6, "GPU/Effects",
+REXCVAR_DEFINE_DOUBLE(scene_fx_underwater_strength, 0.25, "GPU/Effects",
                       "Underwater tint strength (0...1)")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
-REXCVAR_DEFINE_DOUBLE(scene_fx_underwater_haze, 0.08, "GPU/Effects",
+REXCVAR_DEFINE_DOUBLE(scene_fx_underwater_haze, 0.15, "GPU/Effects",
                       "Underwater haze density per meter (0 = no haze)")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 // For tests: the underwater tint without the game's word.
@@ -423,6 +420,7 @@ struct ReflectionConstants {
   float up[4];
   float params[4];
   float water[4];
+  float water_levels[4];
   float water_u[4];
   float water_v[4];
   // x = 1 for only the tagged materials to reflect, y = 1 to show the
@@ -466,7 +464,6 @@ constexpr uint32_t kEffectBloom = 64;
 constexpr uint32_t kEffectOutlines = 128;
 constexpr uint32_t kEffectDof = 256;
 constexpr uint32_t kEffectRim = 512;
-constexpr uint32_t kEffectSmooth = 1024;
 constexpr uint32_t kEffectUnderwater = 2048;
 constexpr int32_t kDebugSplit = 1;
 constexpr int32_t kDebugMaterials = 9;
@@ -605,7 +602,7 @@ bool SceneEffects::AnySceneEffectEnabled() {
          REXCVAR_GET(scene_fx_contact_shadows) || REXCVAR_GET(scene_fx_reflections) ||
          REXCVAR_GET(scene_fx_volumetrics) || REXCVAR_GET(scene_fx_fog) ||
          REXCVAR_GET(scene_fx_bloom) || REXCVAR_GET(scene_fx_toon) ||
-         REXCVAR_GET(scene_fx_dof) || REXCVAR_GET(scene_fx_rim) || REXCVAR_GET(scene_fx_smooth) ||
+         REXCVAR_GET(scene_fx_dof) || REXCVAR_GET(scene_fx_rim) ||
          REXCVAR_GET(scene_fx_underwater) || REXCVAR_GET(scene_fx_water_reflections);
 }
 
@@ -1848,13 +1845,30 @@ bool SceneEffects::ComputeReflections() {
   rc.materials[0] = materials_valid_ ? 1.0f : 0.0f;
   rc.materials[1] = REXCVAR_GET(scene_fx_debug) == kDebugMaterials ? 1.0f : 0.0f;
   // The intensities are applied in the shader (water has its own).
-  rc.water[2] =
-      REXCVAR_GET(scene_fx_reflections) ? float(REXCVAR_GET(scene_fx_reflections_intensity)) : 0.0f;
-  float water_level;
-  if (REXCVAR_GET(scene_fx_water_reflections) && rex::system::GetSceneWaterLevel(water_level) &&
-      !Underwater()) {
-    rc.water[0] = water_level * basis.up_sign - height[3];
-    rc.water[1] = float(REXCVAR_GET(scene_fx_water_reflections_strength));
+  // With materials, the reflections are the water's only (L: not everything),
+  // and the surfaces tagged by their textures (texture_materials: ice, metal,
+  // each at its own strength).
+  const bool materials = REXCVAR_GET(scene_fx_reflections_materials);
+  rc.water[2] = REXCVAR_GET(scene_fx_reflections) && (!materials || materials_valid_)
+                    ? float(REXCVAR_GET(scene_fx_reflections_intensity))
+                    : 0.0f;
+  float water_levels[rex::system::kMaxSceneWaterLevels];
+  int water_level_count =
+      WaterReflectionsWanted() ? rex::system::GetSceneWaterLevels(water_levels) : 0;
+  // Not from below the water (really: the underwater tint's "always on" preview
+  // must not turn the water reflections off).
+  if (water_level_count && !rex::system::GetSceneUnderwater()) {
+    static_assert(rex::system::kMaxSceneWaterLevels == 4);
+    for (int i = 0; i < 4; ++i) {
+      // Unused: 1 (above the camera, never water).
+      rc.water_levels[i] =
+          i < water_level_count ? water_levels[i] * basis.up_sign - height[3] : 1.0f;
+    }
+    // The water's own strength, else the reflections' (its default 1 is the
+    // water's default 1.5).
+    rc.water[1] = REXCVAR_GET(scene_fx_water_reflections)
+                      ? float(REXCVAR_GET(scene_fx_water_reflections_strength))
+                      : 1.5f * float(REXCVAR_GET(scene_fx_reflections_intensity));
     static const auto kStart = std::chrono::steady_clock::now();
     rc.water[3] = float(
         std::fmod(std::chrono::duration<double>(std::chrono::steady_clock::now() - kStart).count(),
@@ -1957,7 +1971,7 @@ bool SceneEffects::FillFogConstants() {
         std::clamp(last_frame_scene_rect_.bottom - 1, last_frame_scene_rect_.top,
                    std::max(int32_t(scene_height_) - 1, 0)));
   }
-  composite_constants_[7][0] = float(REXCVAR_GET(scene_fx_smooth_strength));
+  composite_constants_[7][0] = 0.0f;
   composite_constants_[7][2] = float(REXCVAR_GET(scene_fx_underwater_strength));
   composite_constants_[7][3] = WorldDensity(REXCVAR_GET(scene_fx_underwater_haze));
   ParseColor(REXCVAR_GET(scene_fx_underwater_color).c_str(), composite_constants_[8]);
@@ -2068,9 +2082,6 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
                            (draw == Draw::kCompositeResolve && REXCVAR_GET(scene_fx_rim)
                                 ? kEffectRim
                                 : 0) |
-                           (draw == Draw::kCompositeResolve && REXCVAR_GET(scene_fx_smooth)
-                                ? kEffectSmooth
-                                : 0) |
                            (draw == Draw::kCompositeResolve && Underwater() ? kEffectUnderwater
                                                                              : 0);
   constants.composite_mode = draw == Draw::kCompositeAdd       ? kCompositeAdd
@@ -2171,8 +2182,10 @@ bool SceneEffects::Underwater() {
 }
 
 bool SceneEffects::WaterReflectionsWanted() {
-  float level;
-  return REXCVAR_GET(scene_fx_water_reflections) && rex::system::GetSceneWaterLevel(level);
+  float levels[rex::system::kMaxSceneWaterLevels];
+  return (REXCVAR_GET(scene_fx_water_reflections) ||
+          (REXCVAR_GET(scene_fx_reflections) && REXCVAR_GET(scene_fx_reflections_materials))) &&
+         rex::system::GetSceneWaterLevels(levels) > 0;
 }
 
 bool SceneEffects::IsLetterboxed(uint32_t screen_height) const {
@@ -2293,7 +2306,7 @@ void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rec
   bool bloom = sdr && REXCVAR_GET(scene_fx_bloom);
   // Everything that reads the scene's neighborhoods or recolors it.
   bool outlines = sdr && (REXCVAR_GET(scene_fx_toon) || REXCVAR_GET(scene_fx_rim) ||
-                          REXCVAR_GET(scene_fx_smooth) || Underwater());
+                          Underwater());
   bool dof = sdr && REXCVAR_GET(scene_fx_dof) &&
              (REXCVAR_GET(scene_fx_photo_mode) || IsLetterboxed(scene_height_));
   bloom_computed_ = false;
