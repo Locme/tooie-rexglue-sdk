@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -111,7 +112,7 @@ class DxbcShaderTranslator : public ShaderTranslator {
     // If anything in this is structure is changed in a way not compatible with
     // the previous layout, invalidate the pipeline storages by increasing this
     // version number (0xYYYYMMDD)!
-    static constexpr uint32_t kVersion = 0x20260226;
+    static constexpr uint32_t kVersion = 0x20261013;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -176,6 +177,8 @@ class DxbcShaderTranslator : public ShaderTranslator {
       uint32_t dynamic_addressable_register_count : 8;
       // Non-ROV - depth / stencil output mode.
       DepthStencilMode depth_stencil_mode : 2;
+      // N64-style 3-point filtering of magnified linear-filtered 2D textures.
+      uint32_t three_point_filter : 1;
     } pixel;
 
     explicit Modification(uint64_t modification_value = 0) : value(modification_value) {
@@ -876,6 +879,15 @@ class DxbcShaderTranslator : public ShaderTranslator {
     return dxbc::Src::CB(cbuffer_index_fetch_constants_, uint32_t(CbufferRegister::kFetchConstants),
                          total_pair_index >> 1, (total_pair_index & 1) ? 0b10101110 : 0b00000100);
   }
+  // N64 3-point filtering for a 2D tfetch: where the texture is magnified and
+  // linear-filtered, three base-level samples at texel centers (via
+  // sample_into(dest_temp, base_level) at coord_temp.xy) blended into
+  // result_temp; elsewhere the usual sample.
+  void ThreePointSample(uint32_t tfetch_index, xenos::TextureFilter mag_filter,
+                        uint32_t coord_temp, uint32_t size_temp, uint32_t grad_h_lod_temp,
+                        uint32_t grad_v_temp, const dxbc::Src& lod_src, uint32_t result_temp,
+                        uint32_t result_mask,
+                        const std::function<void(uint32_t, bool)>& sample_into);
   dxbc::Src RequestTextureFetchConstantWord(uint32_t fetch_constant_index, uint32_t word_index) {
     return RequestTextureFetchConstantWordPair(fetch_constant_index, word_index >> 1)
         .SelectFromSwizzled(word_index & 1);

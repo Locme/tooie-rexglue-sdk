@@ -169,6 +169,9 @@ REXCVAR_DEFINE_BOOL(scene_fx_16bit, false, "GPU/Effects",
 REXCVAR_DEFINE_BOOL(scene_fx_retro_16bit_color, false, "GPU/Effects",
                     "Retro: the N64's 16-bit color (5 bits per channel with its ordered "
                     "dither pattern) on the final image") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_retro_3point_filter, false, "GPU/Effects",
+                    "Retro: the N64's 3-point texture filtering on magnified textures (shaders "
+                    "are translated again when it changes)") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_retro_crt, false, "GPU/Effects",
                     "Retro: CRT look on the final image (240 scanlines and an aperture "
                     "grille)") REX_SCENE_FX_LIVE;
