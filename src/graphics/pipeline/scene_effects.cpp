@@ -1772,7 +1772,9 @@ bool SceneEffects::ComputeReflections() {
   int water_level_count = REXCVAR_GET(scene_fx_water_reflections)
                               ? rex::system::GetSceneWaterLevels(water_levels)
                               : 0;
-  if (water_level_count && !Underwater()) {
+  // Not from below the water (really: the underwater tint's "always on" preview
+  // must not turn the water reflections off).
+  if (water_level_count && !rex::system::GetSceneUnderwater()) {
     static_assert(rex::system::kMaxSceneWaterLevels == 4);
     for (int i = 0; i < 4; ++i) {
       // Unused: 1 (above the camera, never water).
