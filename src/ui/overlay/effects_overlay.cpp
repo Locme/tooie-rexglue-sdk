@@ -382,16 +382,6 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     ImGui::PopID();
   }
 
-  if (HasCvar("scene_fx_smooth") && EffectHeader("Smooth Triangles", "scene_fx_smooth")) {
-    ImGui::PushID("smooth");
-    Description(
-        "Rounds off the faceted look of low-poly models: each pixel is lit as if the normals "
-        "were smoothed across neighboring triangles, so the creases between flat faces blend "
-        "into curves. Before the HUD.");
-    SliderCvar("Strength", "scene_fx_smooth_strength", 0.0f, 1.0f);
-    ImGui::PopID();
-  }
-
   if (HasCvar("scene_fx_underwater") && EffectHeader("Underwater Tint", "scene_fx_underwater")) {
     ImGui::PushID("underwater");
     Description("A light blue color and haze while the camera is underwater. Before the HUD.");

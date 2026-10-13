@@ -235,14 +235,6 @@ REXCVAR_DEFINE_BOOL(scene_fx_water_reflections, false, "GPU/Effects",
 REXCVAR_DEFINE_DOUBLE(scene_fx_water_reflections_strength, 1.5, "GPU/Effects",
                       "Water reflection strength (0...2)")
     .range(0.0, 2.0) REX_SCENE_FX_LIVE;
-// Smooth shading (roadmap: L's "smooth triangles").
-REXCVAR_DEFINE_BOOL(scene_fx_smooth, false, "GPU/Effects",
-                    "Smooth shading: low-poly models lit as if their normals were interpolated "
-                    "across the triangles, so the creases between flat faces blend into curves "
-                    "(screen space, before the HUD)") REX_SCENE_FX_LIVE;
-REXCVAR_DEFINE_DOUBLE(scene_fx_smooth_strength, 0.7, "GPU/Effects",
-                      "Smooth shading strength (0...1)")
-    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 // Underwater tint, while the game says the camera is underwater
 // (rex::system::SetSceneUnderwater).
 REXCVAR_DEFINE_BOOL(scene_fx_underwater, false, "GPU/Effects",
@@ -456,7 +448,6 @@ constexpr uint32_t kEffectBloom = 64;
 constexpr uint32_t kEffectOutlines = 128;
 constexpr uint32_t kEffectDof = 256;
 constexpr uint32_t kEffectRim = 512;
-constexpr uint32_t kEffectSmooth = 1024;
 constexpr uint32_t kEffectUnderwater = 2048;
 constexpr int32_t kDebugSplit = 1;
 constexpr uint32_t kCompositeMultiply = 0;
@@ -591,7 +582,7 @@ bool SceneEffects::AnySceneEffectEnabled() {
          REXCVAR_GET(scene_fx_contact_shadows) || REXCVAR_GET(scene_fx_reflections) ||
          REXCVAR_GET(scene_fx_volumetrics) || REXCVAR_GET(scene_fx_fog) ||
          REXCVAR_GET(scene_fx_bloom) || REXCVAR_GET(scene_fx_toon) ||
-         REXCVAR_GET(scene_fx_dof) || REXCVAR_GET(scene_fx_rim) || REXCVAR_GET(scene_fx_smooth) ||
+         REXCVAR_GET(scene_fx_dof) || REXCVAR_GET(scene_fx_rim) ||
          REXCVAR_GET(scene_fx_underwater) || REXCVAR_GET(scene_fx_water_reflections);
 }
 
@@ -1891,7 +1882,7 @@ bool SceneEffects::FillFogConstants() {
         std::clamp(last_frame_scene_rect_.bottom - 1, last_frame_scene_rect_.top,
                    std::max(int32_t(scene_height_) - 1, 0)));
   }
-  composite_constants_[7][0] = float(REXCVAR_GET(scene_fx_smooth_strength));
+  composite_constants_[7][0] = 0.0f;
   composite_constants_[7][2] = float(REXCVAR_GET(scene_fx_underwater_strength));
   composite_constants_[7][3] = WorldDensity(REXCVAR_GET(scene_fx_underwater_haze));
   ParseColor(REXCVAR_GET(scene_fx_underwater_color).c_str(), composite_constants_[8]);
@@ -2001,9 +1992,6 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
                            (draw == Draw::kCompositeResolve && dof_computed_ ? kEffectDof : 0) |
                            (draw == Draw::kCompositeResolve && REXCVAR_GET(scene_fx_rim)
                                 ? kEffectRim
-                                : 0) |
-                           (draw == Draw::kCompositeResolve && REXCVAR_GET(scene_fx_smooth)
-                                ? kEffectSmooth
                                 : 0) |
                            (draw == Draw::kCompositeResolve && Underwater() ? kEffectUnderwater
                                                                              : 0);
@@ -2227,7 +2215,7 @@ void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rec
   bool bloom = sdr && REXCVAR_GET(scene_fx_bloom);
   // Everything that reads the scene's neighborhoods or recolors it.
   bool outlines = sdr && (REXCVAR_GET(scene_fx_toon) || REXCVAR_GET(scene_fx_rim) ||
-                          REXCVAR_GET(scene_fx_smooth) || Underwater());
+                          Underwater());
   bool dof = sdr && REXCVAR_GET(scene_fx_dof) &&
              (REXCVAR_GET(scene_fx_photo_mode) || IsLetterboxed(scene_height_));
   bloom_computed_ = false;
