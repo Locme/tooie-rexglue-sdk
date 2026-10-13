@@ -96,7 +96,7 @@ REXCVAR_DEFINE_STRING(texture_materials, "", "GPU",
                       "Text files saying what surfaces drawn with a texture are made of, for "
                       "the scene effects (reflections): one '<texture> <material>' per line, "
                       "the texture as its dump_textures name or just its hash, the material "
-                      "one of water, ice, metal, glass, polished; '#' starts a comment. "
+                      "one of water, ice, metal, glass, polished, character; '#' starts a comment. "
                       "Several files may be given separated by ';'.");
 
 
@@ -564,6 +564,8 @@ const char* TextureCache::GetMaterialName(Material material) {
       return "glass";
     case Material::kPolished:
       return "polished";
+    case Material::kCharacter:
+      return "character";
     default:
       return "unknown";
   }

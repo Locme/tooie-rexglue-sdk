@@ -67,6 +67,9 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_gi_intensity, 1.0, "GPU/Effects", "Global illumin
 REXCVAR_DEFINE_BOOL(scene_fx_contact_shadows, true, "GPU/Effects",
                     "Contact shadows: fine sun shadows the game's shadow maps miss")
     REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_contact_shadows_characters, true, "GPU/Effects",
+                    "Contact shadows on the characters too (false: not on what's drawn with "
+                    "the textures texture_materials calls 'character')") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_contact_shadows_length, 0.5, "GPU/Effects",
                       "Contact shadow ray length in meters")
     .range(0.05, 3.0) REX_SCENE_FX_LIVE;
@@ -337,7 +340,8 @@ REXCVAR_DEFINE_INT32(scene_fx_debug, 0, "GPU/Effects",
                      "only, 2 = ambient occlusion, 3 = volumetric lighting, 4 = global "
                      "illumination, 5 = fog, 6 = contact shadows, 7 = reflections, 8 = depth "
                      "(white near, black far, blue sky), 9 = materials (texture_materials: "
-                     "blue water, cyan ice, yellow metal, green glass, magenta polished)")
+                     "blue water, cyan ice, yellow metal, green glass, magenta polished, "
+                     "orange characters)")
     .range(0, 9) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_trace, false, "GPU/Effects",
                     "Log the effects' decisions for one frame, then reset") REX_SCENE_FX_LIVE;
@@ -398,6 +402,9 @@ struct SunConstants {
   float tint[4];
   float fog[4];
   float contact[4];
+  // x = 1 to leave the characters (TextureCache::Material) without contact
+  // shadows.
+  float material[4];
 };
 
 struct DepthCopyConstants {
@@ -561,7 +568,7 @@ const SceneEffects::PipelineInfo
         {1, false, false, 1},  // kColorCaptureMsaa
         {1, false, false, 1},  // kColorCopy
         {1, false, false, 1},  // kColorCopyMsaa
-        {4, true, true, 1},    // kContactShadows
+        {5, true, true, 1},    // kContactShadows
         {5, true, true, 1},    // kReflections
         {4, true, true, 1},    // kVolumetric
         {3, true, true, 1},    // kTemporal
@@ -618,10 +625,12 @@ bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
 }
 
 bool SceneEffects::MaterialTaggingActive(bool have_materials) {
-  material_tagging_ = have_materials &&
-                      (REXCVAR_GET(scene_fx_reflections) ||
-                       REXCVAR_GET(scene_fx_debug) == kDebugMaterials) &&
-                      AnySceneEffectEnabled();
+  material_tagging_ =
+      have_materials &&
+      (REXCVAR_GET(scene_fx_reflections) || REXCVAR_GET(scene_fx_debug) == kDebugMaterials ||
+       (REXCVAR_GET(scene_fx_contact_shadows) &&
+        !REXCVAR_GET(scene_fx_contact_shadows_characters))) &&
+      AnySceneEffectEnabled();
   return material_tagging_;
 }
 
@@ -1675,6 +1684,8 @@ void SceneEffects::FillSunConstants(const CameraBasis& basis, void* constants_ou
   sc.contact[1] = WorldLength(REXCVAR_GET(scene_fx_contact_shadows_thickness));
   sc.contact[2] = float(kContactShadowStepCount);
   sc.contact[3] = float(REXCVAR_GET(scene_fx_contact_shadows_strength));
+  sc.material[0] =
+      materials_valid_ && !REXCVAR_GET(scene_fx_contact_shadows_characters) ? 1.0f : 0.0f;
   std::memcpy(constants_out, &sc, sizeof(sc));
 }
 
@@ -1806,7 +1817,8 @@ bool SceneEffects::ComputeContactShadows() {
   Texture effect_depth = ao_scale_ == 1 ? DepthTexture() : Texture::kViewDepth;
   static_assert(kMaxShadowCascades == 2);
   if (!Dispatch(Pipeline::kContactShadows,
-                {Source(effect_depth), Source(DepthTexture()), shadows[0], shadows[1]},
+                {Source(effect_depth), Source(DepthTexture()), shadows[0], shadows[1],
+                 Source(Texture::kMaterial)},
                 {Target(Texture::kContactShadows0)}, &constants, &sun, sizeof(sun),
                 EffectSize(scene_width_, ao_scale_), EffectSize(scene_height_, ao_scale_))) {
     return false;

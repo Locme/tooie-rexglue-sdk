@@ -123,6 +123,9 @@ class TextureCache {
     kMetal,
     kGlass,
     kPolished,
+    // Not a surface for the reflections: the characters, which other effects
+    // may leave out (scene_fx_contact_shadows_characters).
+    kCharacter,
     kCount,
   };
   static const char* GetMaterialName(Material material);

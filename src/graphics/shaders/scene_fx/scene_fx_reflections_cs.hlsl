@@ -54,7 +54,7 @@ FX_BINDING(7) FX_FORMAT_RGBA16F RWTexture2D<float4> fx_reflections : register(u0
 
 // Per TextureCache::Material: x = reflectance facing it (Fresnel F0), y =
 // strength; and its color in the debug view.
-static const float2 kFxMaterialReflection[6] = {
+static const float2 kFxMaterialReflection[7] = {
     float2(0.0, 0.0),    // unknown
     // Far more than real water's 0.02: added over the game's own color (the
     // composite only adds light), a real-world amount barely shows.
@@ -63,10 +63,12 @@ static const float2 kFxMaterialReflection[6] = {
     float2(0.6, 0.8),    // metal
     float2(0.2, 1.0),    // glass
     float2(0.1, 0.8),    // polished
+    float2(0.0, 0.0),    // character
 };
-static const float3 kFxMaterialColor[6] = {
+static const float3 kFxMaterialColor[7] = {
     float3(0.0, 0.0, 0.0), float3(0.1, 0.3, 1.0), float3(0.4, 1.0, 1.0),
     float3(1.0, 0.8, 0.1), float3(0.2, 1.0, 0.3), float3(1.0, 0.2, 1.0),
+    float3(1.0, 0.4, 0.1),
 };
 
 float FxEffectDistance(int2 texel) {
@@ -93,7 +95,7 @@ float FxSceneDistance(float2 screen) {
 
 uint FxMaterial(int2 texel) {
   int2 pixel = min(int2(FxEffectScreen(texel, fx_effect_scale)), int2(fx_scene_size) - 1);
-  return min(uint(fx_material.Load(int3(pixel, 0)) + 0.5), 5u);
+  return min(uint(fx_material.Load(int3(pixel, 0)) + 0.5), 6u);
 }
 
 [numthreads(8, 8, 1)]

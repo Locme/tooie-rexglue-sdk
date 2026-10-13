@@ -2,7 +2,9 @@
 // screen-space ray toward the sun from each surface catches the fine shadows
 // the guest's shadow maps are too coarse for - under feet, props and grass,
 // in crevices. Only where the shadow maps say the sun reaches, so nothing is
-// shadowed twice. Output 1 = lit.
+// shadowed twice. Output 1 = lit. The characters (tagged by their textures,
+// texture_materials) may be left out: on a low-poly body the shading reads as
+// dark smudges.
 
 #include "scene_fx_sun.hlsli"
 
@@ -12,9 +14,14 @@ FX_BINDING(0) Texture2D<float> fx_effect_depth : register(t0);
 FX_BINDING(1) Texture2D<float> fx_depth : register(t1);
 FX_BINDING(2) Texture2D<float> fx_shadow0 : register(t2);
 FX_BINDING(3) Texture2D<float> fx_shadow1 : register(t3);
-FX_BINDING(4) SamplerState fx_clamp : register(s0);
-FX_SUN_CONSTANTS(5)
-FX_BINDING(6) FX_FORMAT_R16F RWTexture2D<float> fx_contact : register(u0);
+// Full resolution, TextureCache::Material (0 = unknown).
+FX_BINDING(4) Texture2D<float> fx_material : register(t4);
+FX_BINDING(5) SamplerState fx_clamp : register(s0);
+FX_SUN_CONSTANTS(6)
+FX_BINDING(7) FX_FORMAT_R16F RWTexture2D<float> fx_contact : register(u0);
+
+// TextureCache::Material::kCharacter.
+static const uint kFxMaterialCharacter = 6u;
 
 float3 FxEffectViewPosition(int2 texel) {
   texel = clamp(texel, int2(0, 0), FxEffectSize(fx_effect_scale) - 1);
@@ -33,7 +40,15 @@ void main(uint3 id : SV_DispatchThreadID) {
     fx_contact[texel] = 1.0;
     return;
   }
-  float3 position = FxViewPosition(FxEffectScreen(texel, fx_effect_scale), distance);
+  float2 screen_position = FxEffectScreen(texel, fx_effect_scale);
+  if (fx_sun_material.x > 0.0) {
+    int2 pixel = min(int2(screen_position), int2(fx_scene_size) - 1);
+    if (uint(fx_material.Load(int3(pixel, 0)) + 0.5) == kFxMaterialCharacter) {
+      fx_contact[texel] = 1.0;
+      return;
+    }
+  }
+  float3 position = FxViewPosition(screen_position, distance);
   // Already in the guest's shadow: nothing to add.
   float lit;
   FX_SUN_SHADOW(fx_shadow0, fx_shadow1, fx_clamp, position, lit)
