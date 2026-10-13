@@ -71,6 +71,21 @@ class IGraphicsSystem {
     (void)block_size_log2;
   }
 
+  // Save states, driven by the game at a frame boundary: pause the GPU's
+  // command processor (it finishes the buffer it is on), read or put back
+  // its ring pointers, and drop every cache built from guest memory.
+  virtual void PauseGpu() {}
+  virtual void ResumeGpu() {}
+  virtual bool GetRingPointers(uint32_t* read, uint32_t* write) {
+    (void)read;
+    (void)write;
+    return false;
+  }
+  virtual void RestoreRingPointersAndClearCaches(uint32_t read, uint32_t write) {
+    (void)read;
+    (void)write;
+  }
+
   // Persistent shader/pipeline storage under the cache root. Default: none.
   virtual void InitializeShaderStorage(const std::filesystem::path& cache_root, uint32_t title_id,
                                        bool blocking) {

@@ -48,14 +48,21 @@ X_STATUS InputSystem::Setup() {
 }
 
 void InputSystem::Shutdown() {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   // device_owners_ holds raw driver pointers.
   devices_.clear();
   device_owners_.clear();
   drivers_.clear();
+  driver_backends_.clear();
 }
 
 void InputSystem::AddDriver(std::unique_ptr<InputDriver> driver) {
+  AddDriver(std::move(driver), {});
+}
+
+void InputSystem::AddDriver(std::unique_ptr<InputDriver> driver, std::string backend) {
   drivers_.push_back(std::move(driver));
+  driver_backends_.push_back(std::move(backend));
 }
 
 void InputSystem::AttachWindow(rex::ui::Window* window) {
@@ -72,6 +79,7 @@ void InputSystem::SetActiveCallback(std::function<bool()> callback) {
 }
 
 void InputSystem::SetDeviceAssignment(std::unique_ptr<DeviceAssignment> assignment) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   assignment_ = std::move(assignment);
   if (assignment_) {
     assignment_->OnDevicesChanged(devices_);
@@ -82,9 +90,17 @@ void InputSystem::RefreshDevices() {
   std::vector<DeviceInfo> seen;
   std::vector<InputDriver*> owners;
   std::vector<DeviceInfo> enumerated;
-  for (auto& driver : drivers_) {
+  // Pads of a backend other than input_backend's drop out (and the chosen
+  // one's come in) at the next refresh: the backend switches while running.
+  const std::string backend = REXCVAR_GET(input_backend);
+  for (size_t d = 0; d < drivers_.size(); d++) {
+    auto& driver = drivers_[d];
     enumerated.clear();
+    // Still enumerated when off, so its own event queue keeps draining.
     driver->EnumerateDevices(enumerated);
+    if (!driver_backends_[d].empty() && driver_backends_[d] != backend) {
+      continue;
+    }
     for (auto& info : enumerated) {
       seen.push_back(info);
       owners.push_back(driver.get());
@@ -186,6 +202,7 @@ const DeviceInfo* InputSystem::DeviceInfoFor(DeviceId id) const {
 
 X_RESULT InputSystem::GetCapabilities(uint32_t user_index, uint32_t flags,
                                       X_INPUT_CAPABILITIES* out_caps) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   SCOPE_profile_cpu_f("hid");
   if (!out_caps || !assignment_) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
@@ -213,6 +230,7 @@ X_RESULT InputSystem::GetCapabilities(uint32_t user_index, uint32_t flags,
 }
 
 X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   SCOPE_profile_cpu_f("hid");
   if (!assignment_) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
@@ -251,7 +269,49 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
   return X_ERROR_SUCCESS;
 }
 
+X_RESULT InputSystem::GetMotion(uint32_t user_index, float out_degrees[3]) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  SCOPE_profile_cpu_f("hid");
+  out_degrees[0] = out_degrees[1] = out_degrees[2] = 0.0f;
+  if (!assignment_) {
+    return X_ERROR_DEVICE_NOT_CONNECTED;
+  }
+
+  RefreshDevices();
+  std::vector<DeviceId> ids;
+  assignment_->DevicesForUser(user_index, ids);
+
+  // Every pad is read so none saves up a turn for later.
+  bool any = false;
+  for (DeviceId id : ids) {
+    auto* driver = DriverForDevice(id);
+    if (!driver) {
+      continue;
+    }
+    float degrees[3] = {};
+    if (driver->GetDeviceMotion(id, degrees) != X_ERROR_SUCCESS) {
+      continue;
+    }
+    any = true;
+    for (int i = 0; i < 3; i++) {
+      out_degrees[i] += degrees[i];
+    }
+  }
+  return any ? X_ERROR_SUCCESS : X_ERROR_DEVICE_NOT_CONNECTED;
+}
+
+bool InputSystem::IsUserConnected(uint32_t user_index) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  if (!assignment_) {
+    return false;
+  }
+  std::vector<DeviceId> ids;
+  assignment_->DevicesForUser(user_index, ids);
+  return !ids.empty();
+}
+
 X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   SCOPE_profile_cpu_f("hid");
   if (!assignment_) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
@@ -294,6 +354,7 @@ X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration
 
 X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
                                    X_INPUT_KEYSTROKE* out_keystroke) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   SCOPE_profile_cpu_f("hid");
   if (!assignment_) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
@@ -325,20 +386,18 @@ std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
   auto input = std::make_unique<InputSystem>(nullptr);
 
   if (!tool_mode) {
+    // Both pad drivers are set up; only the one input_backend names hands
+    // out pads, so changing it takes effect at once.
 #if REX_PLATFORM_WIN32
-    if (REXCVAR_GET(input_backend) == "xinput") {
-      auto xinput_driver = std::make_unique<xinput::XinputInputDriver>(nullptr, 0);
-      if (xinput_driver->Setup() == X_STATUS_SUCCESS) {
-        input->AddDriver(std::move(xinput_driver));
-      }
+    auto xinput_driver = std::make_unique<xinput::XinputInputDriver>(nullptr, 0);
+    if (xinput_driver->Setup() == X_STATUS_SUCCESS) {
+      input->AddDriver(std::move(xinput_driver), "xinput");
     }
 #endif
 
-    if (REXCVAR_GET(input_backend) == "sdl") {
-      auto sdl_driver = std::make_unique<sdl::SDLInputDriver>(nullptr, 0);
-      if (sdl_driver->Setup() == X_STATUS_SUCCESS) {
-        input->AddDriver(std::move(sdl_driver));
-      }
+    auto sdl_driver = std::make_unique<sdl::SDLInputDriver>(nullptr, 0);
+    if (sdl_driver->Setup() == X_STATUS_SUCCESS) {
+      input->AddDriver(std::move(sdl_driver), "sdl");
     }
 
     // MnK driver (keyboard/mouse -> controller emulation)

@@ -12,14 +12,19 @@
 #include "smaa_tables.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 
+#include <chrono>
+#include <cmath>
+
 #include <rex/cvar.h>
 #include <rex/system/effect_timings.h>
 #include <rex/system/scene_camera.h>
+#include <rex/system/scene_hints.h>
 #include <rex/graphics/registers.h>
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
@@ -164,6 +169,9 @@ REXCVAR_DEFINE_BOOL(scene_fx_16bit, false, "GPU/Effects",
 REXCVAR_DEFINE_BOOL(scene_fx_retro_16bit_color, false, "GPU/Effects",
                     "Retro: the N64's 16-bit color (5 bits per channel with its ordered "
                     "dither pattern) on the final image") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_retro_3point_filter, false, "GPU/Effects",
+                    "Retro: the N64's 3-point texture filtering on magnified textures (shaders "
+                    "are translated again when it changes)") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_retro_crt, false, "GPU/Effects",
                     "Retro: CRT look on the final image (240 scanlines and an aperture "
                     "grille)") REX_SCENE_FX_LIVE;
@@ -201,6 +209,10 @@ REXCVAR_DEFINE_BOOL(scene_fx_dof, false, "GPU/Effects",
 REXCVAR_DEFINE_DOUBLE(scene_fx_dof_strength, 0.8, "GPU/Effects",
                       "Cutscene depth of field strength (0...1)")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_photo_mode, false, "GPU/Effects",
+                    "Set by a game's photo mode: the cutscene-only effects (depth of field, "
+                    "focused on the center of the screen, and the vignette and grain) apply "
+                    "outside cutscenes too") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_rim, false, "GPU/Effects",
                     "Rim light: a soft sky-colored glow along the silhouettes of an 8-bit scene, "
                     "as if lit from behind (before the HUD)") REX_SCENE_FX_LIVE;
@@ -215,6 +227,38 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_cinematic_vignette, 0.35, "GPU/Effects",
 REXCVAR_DEFINE_DOUBLE(scene_fx_cinematic_grain, 0.25, "GPU/Effects",
                       "Cutscene film grain strength (0...1)")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+// Water reflections, at the water level the game gives
+// (rex::system::SetSceneWaterLevel).
+REXCVAR_DEFINE_BOOL(scene_fx_water_reflections, false, "GPU/Effects",
+                    "Water reflections: the scene and the sky mirrored in the water, with "
+                    "gentle ripples (needs the game's water level)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_water_reflections_strength, 1.5, "GPU/Effects",
+                      "Water reflection strength (0...2)")
+    .range(0.0, 2.0) REX_SCENE_FX_LIVE;
+// Smooth shading (roadmap: L's "smooth triangles").
+REXCVAR_DEFINE_BOOL(scene_fx_smooth, false, "GPU/Effects",
+                    "Smooth shading: low-poly models lit as if their normals were interpolated "
+                    "across the triangles, so the creases between flat faces blend into curves "
+                    "(screen space, before the HUD)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_smooth_strength, 0.7, "GPU/Effects",
+                      "Smooth shading strength (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+// Underwater tint, while the game says the camera is underwater
+// (rex::system::SetSceneUnderwater).
+REXCVAR_DEFINE_BOOL(scene_fx_underwater, false, "GPU/Effects",
+                    "Underwater tint: a light blue color and haze while the camera is underwater "
+                    "(before the HUD)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_STRING(scene_fx_underwater_color, "0.55,0.85,1.0", "GPU/Effects",
+                      "Underwater tint color as r,g,b (0...1)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_underwater_strength, 0.6, "GPU/Effects",
+                      "Underwater tint strength (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_underwater_haze, 0.08, "GPU/Effects",
+                      "Underwater haze density per meter (0 = no haze)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+// For tests: the underwater tint without the game's word.
+REXCVAR_DEFINE_BOOL(scene_fx_underwater_force, false, "GPU/Effects",
+                    "Always apply the underwater tint (testing)") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_timing, false, "GPU/Effects",
                     "Measure the GPU time of each effect (shown in the debug overlay, F3)")
     REX_SCENE_FX_LIVE;
@@ -243,6 +287,19 @@ REXCVAR_DEFINE_INT32(scene_fx_brightness, 100, "GPU/Effects",
                      "Display brightness in percent (a gamma for your screen, apart from color "
                      "grading): above 100 brightens the darks and midtones")
     .range(50, 200) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_eye_adaptation, false, "GPU/Effects",
+                    "Eye adaptation: dark places brightened and bright ones toned down over a "
+                    "moment, like eyes adjusting")
+    REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_eye_adaptation_strength, 0.6, "GPU/Effects",
+                      "Eye adaptation strength (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_eye_adaptation_speed, 1.0, "GPU/Effects",
+                      "Eye adaptation speed (1 = about a second to adjust)")
+    .range(0.25, 4.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_eye_adaptation_key, 0.18, "GPU/Effects",
+                      "Eye adaptation: the average brightness (linear) it adapts toward")
+    .range(0.05, 0.5) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_grading_gamma, 1.0, "GPU/Effects",
                       "Gamma: above 1 brightens the midtones")
     .range(0.5, 2.0) REX_SCENE_FX_LIVE;
@@ -358,9 +415,23 @@ struct ReflectionConstants {
   float reproject[4][4];
   float up[4];
   float params[4];
+  float water[4];
+  float water_u[4];
+  float water_v[4];
   // x = 1 for only the tagged materials to reflect, y = 1 to show the
   // materials (scene_fx_debug 9).
   float materials[4];
+};
+
+struct ExposureConstants {
+  // Measure: the rectangle measured, in the image's pixels.
+  int32_t rect[4];
+  // x = this tile's texel (measure), y = tiles measured last frame (adapt),
+  // z = adaptation rate brightening, w = darkening (0...1 this frame).
+  float params[4];
+  // x = log2 of the brightness adapted toward, y = strength, z = darkest and
+  // w = brightest correction (stops).
+  float range[4];
 };
 
 struct ImageConstants {
@@ -372,6 +443,8 @@ struct ImageConstants {
   float colorblind[4];
   float area[4];
   float screen[4];
+  // x = 1 to apply the adapted exposure (t1).
+  float exposure[4];
 };
 
 // fx_effect_flags, scene_fx_debug and fx_composite_mode, as in
@@ -386,6 +459,8 @@ constexpr uint32_t kEffectBloom = 64;
 constexpr uint32_t kEffectOutlines = 128;
 constexpr uint32_t kEffectDof = 256;
 constexpr uint32_t kEffectRim = 512;
+constexpr uint32_t kEffectSmooth = 1024;
+constexpr uint32_t kEffectUnderwater = 2048;
 constexpr int32_t kDebugSplit = 1;
 constexpr int32_t kDebugMaterials = 9;
 constexpr uint32_t kCompositeMultiply = 0;
@@ -465,6 +540,9 @@ const SceneEffects::TextureInfo
         {TextureFormat::kRGBA16Float, 1, false},                // kDofBright
         {TextureFormat::kRGBA16Float, 1, false},                // kDof
         {TextureFormat::kR16Float, 1, true},                    // kMaterial
+        {TextureFormat::kRGBA16Float, 1, true},                 // kExposureTiles
+        {TextureFormat::kRGBA16Float, 1, true},                 // kExposure0
+        {TextureFormat::kRGBA16Float, 1, true},                 // kExposure1
 };
 
 const SceneEffects::PipelineInfo
@@ -495,6 +573,8 @@ const SceneEffects::PipelineInfo
         {1, false, true, 1},   // kBloomBlur
         {1, false, false, 1},  // kMaterialCopy
         {1, false, false, 1},  // kMaterialCopyMsaa
+        {1, false, true, 1},   // kExposureMeasure
+        {2, false, true, 1},   // kExposureAdapt
 };
 
 SceneEffects::SceneEffects(RenderTargetCache& render_target_cache,
@@ -518,7 +598,8 @@ bool SceneEffects::AnySceneEffectEnabled() {
          REXCVAR_GET(scene_fx_contact_shadows) || REXCVAR_GET(scene_fx_reflections) ||
          REXCVAR_GET(scene_fx_volumetrics) || REXCVAR_GET(scene_fx_fog) ||
          REXCVAR_GET(scene_fx_bloom) || REXCVAR_GET(scene_fx_toon) ||
-         REXCVAR_GET(scene_fx_dof) || REXCVAR_GET(scene_fx_rim);
+         REXCVAR_GET(scene_fx_dof) || REXCVAR_GET(scene_fx_rim) || REXCVAR_GET(scene_fx_smooth) ||
+         REXCVAR_GET(scene_fx_underwater) || REXCVAR_GET(scene_fx_water_reflections);
 }
 
 bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
@@ -580,7 +661,8 @@ bool SceneEffects::AnyImageEffectEnabled() {
   return REXCVAR_GET(scene_fx_sharpen) || REXCVAR_GET(scene_fx_grading) ||
          REXCVAR_GET(scene_fx_smaa) || REXCVAR_GET(scene_fx_retro_16bit_color) ||
          REXCVAR_GET(scene_fx_retro_crt) || REXCVAR_GET(scene_fx_colorblind) > 0 ||
-         REXCVAR_GET(scene_fx_cinematic) || REXCVAR_GET(scene_fx_brightness) != 100;
+         REXCVAR_GET(scene_fx_cinematic) || REXCVAR_GET(scene_fx_brightness) != 100 ||
+         REXCVAR_GET(scene_fx_eye_adaptation);
 }
 
 bool SceneEffects::SunShadowsNeeded() {
@@ -877,7 +959,8 @@ void SceneEffects::OnResolve() {
     if (effects_frame_ != frame) {
       ComputeEffects(*source_rt, rect, screen_offset_x, screen_offset_y, trace);
     }
-    if (REXCVAR_GET(scene_fx_gi) || REXCVAR_GET(scene_fx_reflections)) {
+    if (REXCVAR_GET(scene_fx_gi) || REXCVAR_GET(scene_fx_reflections) ||
+      WaterReflectionsWanted()) {
       CaptureSceneColor(*source_rt, rect, screen_offset_x, screen_offset_y);
     }
     if (debug_mode > kDebugSplit) {
@@ -1073,7 +1156,8 @@ void SceneEffects::CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* d
   }
   hdr_frame_ = frame;
   ComputeEffects(color_rt, rect, screen_offset_x, screen_offset_y, trace);
-  if (REXCVAR_GET(scene_fx_gi) || REXCVAR_GET(scene_fx_reflections)) {
+  if (REXCVAR_GET(scene_fx_gi) || REXCVAR_GET(scene_fx_reflections) ||
+      WaterReflectionsWanted()) {
     CaptureSceneColor(color_rt, rect, screen_offset_x, screen_offset_y);
   }
   if (REXCVAR_GET(scene_fx_debug) > kDebugSplit) {
@@ -1379,6 +1463,9 @@ bool SceneEffects::EnsureSceneTextures(uint32_t width, uint32_t height) {
       case Texture::kSmaaEdges:
       case Texture::kSmaaWeights:
       case Texture::kSmaaImage:
+      case Texture::kExposureTiles:
+      case Texture::kExposure0:
+      case Texture::kExposure1:
         // Their own sizes.
         continue;
       default:
@@ -1519,9 +1606,12 @@ bool SceneEffects::GetConfiguredSunDirection(float toward_sun_world_out[3]) {
 }
 
 void SceneEffects::GetSunTint(float tint_out[3]) {
+  ParseColor(REXCVAR_GET(scene_fx_sun_tint).c_str(), tint_out);
+}
+
+void SceneEffects::ParseColor(const char* tint, float tint_out[3]) {
   // "r,g,b"; missing components stay 1.
   tint_out[0] = tint_out[1] = tint_out[2] = 1.0f;
-  const char* tint = REXCVAR_GET(scene_fx_sun_tint).c_str();
   for (uint32_t i = 0; i < 3 && *tint; ++i) {
     char* end;
     float component = std::strtof(tint, &end);
@@ -1613,7 +1703,8 @@ void SceneEffects::ComputeEffects(RenderTarget& color_rt, const Rect& rect,
   PrefilterDepth();
   // The reflections of tagged materials show the sky where nothing on the
   // screen is in the way.
-  if (volumetrics || fog || gi || (materials_valid_ && REXCVAR_GET(scene_fx_reflections))) {
+  if (volumetrics || fog || gi || WaterReflectionsWanted() ||
+      (materials_valid_ && REXCVAR_GET(scene_fx_reflections))) {
     // Only where the 3D was drawn: letterbox bars have the sky's depth too.
     Rect sky_rect = rect;
     if (ClipToSceneDraws(sky_rect)) {
@@ -1633,7 +1724,7 @@ void SceneEffects::ComputeEffects(RenderTarget& color_rt, const Rect& rect,
   }
   {
     TimingScope timing(*this, TimedSection::kReflections);
-    reflections_computed_ = (REXCVAR_GET(scene_fx_reflections) ||
+    reflections_computed_ = (REXCVAR_GET(scene_fx_reflections) || WaterReflectionsWanted() ||
                              REXCVAR_GET(scene_fx_debug) == kDebugMaterials) &&
                             ComputeReflections();
   }
@@ -1741,13 +1832,40 @@ bool SceneEffects::ComputeReflections() {
   rc.params[3] = float(REXCVAR_GET(scene_fx_reflections_reflectance));
   rc.materials[0] = materials_valid_ ? 1.0f : 0.0f;
   rc.materials[1] = REXCVAR_GET(scene_fx_debug) == kDebugMaterials ? 1.0f : 0.0f;
+  // The intensities are applied in the shader (water has its own).
+  rc.water[2] =
+      REXCVAR_GET(scene_fx_reflections) ? float(REXCVAR_GET(scene_fx_reflections_intensity)) : 0.0f;
+  float water_level;
+  if (REXCVAR_GET(scene_fx_water_reflections) && rex::system::GetSceneWaterLevel(water_level) &&
+      !Underwater()) {
+    rc.water[0] = water_level * basis.up_sign - height[3];
+    rc.water[1] = float(REXCVAR_GET(scene_fx_water_reflections_strength));
+    static const auto kStart = std::chrono::steady_clock::now();
+    rc.water[3] = float(
+        std::fmod(std::chrono::duration<double>(std::chrono::steady_clock::now() - kStart).count(),
+                  3600.0));
+    // The two world axes across the up axis, in view space.
+    uint32_t axis_u = (basis.up_axis + 1) % 3, axis_v = (basis.up_axis + 2) % 3;
+    rc.water_u[0] = basis.right[axis_u];
+    rc.water_u[1] = basis.up[axis_u];
+    rc.water_u[2] = basis.forward[axis_u];
+    rc.water_u[3] = basis.position[axis_u];
+    rc.water_v[0] = basis.right[axis_v];
+    rc.water_v[1] = basis.up[axis_v];
+    rc.water_v[2] = basis.forward[axis_v];
+    rc.water_v[3] = basis.position[axis_v];
+  }
+  if (rc.water[1] <= 0.0f && rc.water[2] <= 0.0f && rc.materials[1] <= 0.0f) {
+    return false;
+  }
+  Texture sky = sky_index_ ? Texture::kSky1 : Texture::kSky0;
   FxConstants constants;
   FillConstants(&constants, 0, 0);
   constants.effect_scale = ao_scale_;
   Texture previous_color = scene_color_index_ ? Texture::kSceneColor0 : Texture::kSceneColor1;
   if (!Dispatch(Pipeline::kReflections,
                 {Source(Texture::kViewDepth), Source(DepthTexture()), Source(previous_color),
-                 Source(Texture::kMaterial), Source(sky_index_ ? Texture::kSky1 : Texture::kSky0)},
+                 Source(sky), Source(Texture::kMaterial)},
                 {Target(Texture::kReflections0)}, &constants, &rc, sizeof(rc),
                 EffectSize(scene_width_, ao_scale_), EffectSize(scene_height_, ao_scale_))) {
     return false;
@@ -1809,7 +1927,8 @@ bool SceneEffects::FillFogConstants() {
   // The composite's extra constants, with the fog's when it's on.
   std::memset(composite_constants_, 0, sizeof(composite_constants_));
   composite_constants_[5][0] = float(REXCVAR_GET(scene_fx_contact_shadows_strength));
-  composite_constants_[5][1] = float(REXCVAR_GET(scene_fx_reflections_intensity));
+  // Applied by the reflections shader.
+  composite_constants_[5][1] = 1.0f;
   composite_constants_[5][2] = float(REXCVAR_GET(scene_fx_bloom_intensity));
   composite_constants_[5][3] = float(REXCVAR_GET(scene_fx_toon_strength));
   composite_constants_[6][0] = float(REXCVAR_GET(scene_fx_dof_strength));
@@ -1823,6 +1942,10 @@ bool SceneEffects::FillFogConstants() {
         std::clamp(last_frame_scene_rect_.bottom - 1, last_frame_scene_rect_.top,
                    std::max(int32_t(scene_height_) - 1, 0)));
   }
+  composite_constants_[7][0] = float(REXCVAR_GET(scene_fx_smooth_strength));
+  composite_constants_[7][2] = float(REXCVAR_GET(scene_fx_underwater_strength));
+  composite_constants_[7][3] = WorldDensity(REXCVAR_GET(scene_fx_underwater_haze));
+  ParseColor(REXCVAR_GET(scene_fx_underwater_color).c_str(), composite_constants_[8]);
   CameraBasis basis;
   if (!camera_.has_matrix || !GetCameraBasis(camera_.rows, basis)) {
     return false;
@@ -1929,7 +2052,12 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
                            (draw == Draw::kCompositeResolve && dof_computed_ ? kEffectDof : 0) |
                            (draw == Draw::kCompositeResolve && REXCVAR_GET(scene_fx_rim)
                                 ? kEffectRim
-                                : 0);
+                                : 0) |
+                           (draw == Draw::kCompositeResolve && REXCVAR_GET(scene_fx_smooth)
+                                ? kEffectSmooth
+                                : 0) |
+                           (draw == Draw::kCompositeResolve && Underwater() ? kEffectUnderwater
+                                                                             : 0);
   constants.composite_mode = draw == Draw::kCompositeAdd       ? kCompositeAdd
                              : draw == Draw::kCompositeDebug   ? kCompositeDebug
                              : draw == Draw::kCompositeResolve ? kCompositeResolve
@@ -2020,6 +2148,16 @@ bool SceneEffects::ComputeSceneBlur(const Rect& rect, int32_t screen_offset_x,
   return Dispatch(Pipeline::kBloomBlur, {Source(Texture::kBloomBlur)}, {Target(result)},
                   &constants, blur_clamp, sizeof(blur_clamp), uint32_t(right - left),
                   uint32_t(bottom - top));
+}
+
+bool SceneEffects::Underwater() {
+  return REXCVAR_GET(scene_fx_underwater) &&
+         (REXCVAR_GET(scene_fx_underwater_force) || rex::system::GetSceneUnderwater());
+}
+
+bool SceneEffects::WaterReflectionsWanted() {
+  float level;
+  return REXCVAR_GET(scene_fx_water_reflections) && rex::system::GetSceneWaterLevel(level);
 }
 
 bool SceneEffects::IsLetterboxed(uint32_t screen_height) const {
@@ -2138,8 +2276,11 @@ void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rec
   bool multiply = ao_computed_ || gi_computed_ || contact_shadows_computed_ || fog_enabled_;
   bool add = fog_enabled_ || volumetrics_computed_ || reflections_computed_;
   bool bloom = sdr && REXCVAR_GET(scene_fx_bloom);
-  bool outlines = sdr && (REXCVAR_GET(scene_fx_toon) || REXCVAR_GET(scene_fx_rim));
-  bool dof = sdr && REXCVAR_GET(scene_fx_dof) && IsLetterboxed(scene_height_);
+  // Everything that reads the scene's neighborhoods or recolors it.
+  bool outlines = sdr && (REXCVAR_GET(scene_fx_toon) || REXCVAR_GET(scene_fx_rim) ||
+                          REXCVAR_GET(scene_fx_smooth) || Underwater());
+  bool dof = sdr && REXCVAR_GET(scene_fx_dof) &&
+             (REXCVAR_GET(scene_fx_photo_mode) || IsLetterboxed(scene_height_));
   bloom_computed_ = false;
   dof_computed_ = false;
   if (!multiply && !add && !bloom && !outlines && !dof) {
@@ -2198,10 +2339,15 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
     area = last_frame_scene_rect_;
   }
   bool letterboxed = IsLetterboxed(height);
-  bool cinematic = REXCVAR_GET(scene_fx_cinematic) && letterboxed;
+  bool cinematic =
+      REXCVAR_GET(scene_fx_cinematic) && (letterboxed || REXCVAR_GET(scene_fx_photo_mode));
   float brightness = float(REXCVAR_GET(scene_fx_brightness)) * 0.01f;
+  bool eye_adaptation = REXCVAR_GET(scene_fx_eye_adaptation);
+  if (!eye_adaptation) {
+    exposure_valid_ = false;
+  }
   if (!sharpen && !grading && !smaa && !retro_color && !crt && colorblind <= 0 && !cinematic &&
-      brightness == 1.0f) {
+      brightness == 1.0f && !eye_adaptation) {
     return;
   }
   TimingScope timing(*this, TimedSection::kImage);
@@ -2225,7 +2371,18 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
   if (smaa && ApplySmaa(&constants, rect, width, height)) {
     image = Texture::kSmaaImage;
   }
+  Texture exposure = Texture::kCount;
+  if (eye_adaptation) {
+    // Measured within the 3D's area (not the letterbox bars), in this tile's
+    // render target pixels.
+    Rect measured = {std::max(rect.left, area.left - screen_offset_x),
+                     std::max(rect.top, area.top - screen_offset_y),
+                     std::min(rect.right, area.right - screen_offset_x),
+                     std::min(rect.bottom, area.bottom - screen_offset_y)};
+    exposure = UpdateEyeAdaptation(image, rect, measured);
+  }
   ImageConstants ic = {};
+  ic.exposure[0] = exposure != Texture::kCount ? 1.0f : 0.0f;
   ic.sharpen[0] = float(REXCVAR_GET(scene_fx_sharpen_amount));
   ic.sharpen[1] = sharpen ? 1.0f : 0.0f;
   ic.grade[0] = ic.grade[1] = ic.grade[2] = 1.0f;
@@ -2274,7 +2431,63 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
         "{}) on {}x{}",
         image == Texture::kSmaaImage, sharpen, grading, retro_color, crt, width, height);
   }
-  DrawFullscreen(Draw::kImage, color_rt, rect, {Source(image)}, &constants, &ic, sizeof(ic));
+  // t1 unused (the image again) without eye adaptation.
+  DrawFullscreen(Draw::kImage, color_rt, rect,
+                 {Source(image), Source(exposure != Texture::kCount ? exposure : image)},
+                 &constants, &ic, sizeof(ic));
+}
+
+SceneEffects::Texture SceneEffects::UpdateEyeAdaptation(Texture image, const Rect& rect,
+                                                        const Rect& area) {
+  if (!EnsureTexture(Texture::kExposureTiles, kMaxSdrTiles, 1) ||
+      !EnsureTexture(Texture::kExposure0, 1, 1) || !EnsureTexture(Texture::kExposure1, 1, 1)) {
+    return Texture::kCount;
+  }
+  FxConstants constants;
+  FillConstants(&constants, 0, 0);
+  ExposureConstants ec = {};
+  ec.range[0] = std::log2(float(REXCVAR_GET(scene_fx_eye_adaptation_key)));
+  ec.range[1] = float(REXCVAR_GET(scene_fx_eye_adaptation_strength));
+  ec.range[2] = -1.0f;
+  ec.range[3] = 1.5f;
+  uint64_t frame = GetCurrentFrame();
+  if (exposure_frame_ != frame) {
+    // The frame's first image: adapt toward what the previous frame measured
+    // (its tiles together), at a rate from the time since then - faster
+    // toward darker, as eyes adjust to light faster than to the dark.
+    auto now = std::chrono::steady_clock::now();
+    float seconds = exposure_valid_ ? std::chrono::duration<float>(now - exposure_time_).count()
+                                    : 0.0f;
+    seconds = std::clamp(seconds, 0.0f, 0.25f);
+    float speed = float(REXCVAR_GET(scene_fx_eye_adaptation_speed));
+    ec.params[1] = float(exposure_valid_ ? exposure_tile_count_ : 0);
+    ec.params[2] = 1.0f - std::exp(-seconds * speed / 1.2f);
+    ec.params[3] = 1.0f - std::exp(-seconds * speed / 0.5f);
+    Texture previous = exposure_index_ ? Texture::kExposure1 : Texture::kExposure0;
+    Texture next = exposure_index_ ? Texture::kExposure0 : Texture::kExposure1;
+    if (!Dispatch(Pipeline::kExposureAdapt, {Source(Texture::kExposureTiles), Source(previous)},
+                  {Target(next)}, &constants, &ec, sizeof(ec), 1, 1)) {
+      return Texture::kCount;
+    }
+    exposure_index_ ^= 1;
+    exposure_frame_ = frame;
+    exposure_time_ = now;
+    exposure_tile_count_ = 0;
+    exposure_valid_ = true;
+  }
+  if (exposure_tile_count_ < kMaxSdrTiles && area.right > area.left && area.bottom > area.top) {
+    ec.rect[0] = area.left;
+    ec.rect[1] = area.top;
+    ec.rect[2] = area.right;
+    ec.rect[3] = area.bottom;
+    ec.params[0] = float(exposure_tile_count_);
+    // One 16x16 group.
+    if (Dispatch(Pipeline::kExposureMeasure, {Source(image)}, {Target(Texture::kExposureTiles)},
+                 &constants, &ec, sizeof(ec), 1, 1)) {
+      ++exposure_tile_count_;
+    }
+  }
+  return exposure_index_ ? Texture::kExposure1 : Texture::kExposure0;
 }
 
 bool SceneEffects::EnsureImageTexture(Texture texture, uint32_t width, uint32_t height) {

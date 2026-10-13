@@ -33,7 +33,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // TODO(Triang3l): Change to 0xYYYYMMDD once it's out of the rapid
     // prototyping stage (easier to do small granular updates with an
     // incremental counter).
-    static constexpr uint32_t kVersion = 12;
+    static constexpr uint32_t kVersion = 13;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -88,6 +88,8 @@ class SpirvShaderTranslator : public ShaderTranslator {
       uint32_t param_gen_point : 1;
       // For host render targets - depth / stencil output mode.
       DepthStencilMode depth_stencil_mode : 3;
+      // N64-style 3-point filtering of magnified linear-filtered 2D textures.
+      uint32_t three_point_filter : 1;
     } pixel;
     uint64_t value = 0;
 
@@ -691,6 +693,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // set internally, optionally doing linear interpolation between the an
   // existing value and the new one (the result location may be the same as for
   // the first lerp endpoint, but not across signedness).
+  // Like SampleTexture, but N64 3-point filtering (3 texel-center samples from
+  // the base level, blended by the position within the texel triangle).
+  void SampleTextureThreePoint(spv::Builder::TextureParameters& texture_parameters,
+                               spv::Id coordinates_2d, spv::Id size_2d, spv::Id layer,
+                               spv::Id image_unsigned, spv::Id image_signed, spv::Id sampler,
+                               spv::Id is_any_unsigned, spv::Id is_any_signed,
+                               spv::Id& result_unsigned_out, spv::Id& result_signed_out);
   void SampleTexture(spv::Builder::TextureParameters& texture_parameters,
                      spv::ImageOperandsMask image_operands_mask, spv::Id image_unsigned,
                      spv::Id image_signed, spv::Id sampler, spv::Id is_any_unsigned,

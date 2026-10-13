@@ -52,6 +52,8 @@ namespace shaders {
 #include "../shaders/vulkan_spirv/scene_fx_bloom_blur_cs.h"
 #include "../shaders/vulkan_spirv/scene_fx_material_copy_cs.h"
 #include "../shaders/vulkan_spirv/scene_fx_material_copy_msaa_cs.h"
+#include "../shaders/vulkan_spirv/scene_fx_exposure_measure_cs.h"
+#include "../shaders/vulkan_spirv/scene_fx_exposure_adapt_cs.h"
 #include "../shaders/vulkan_spirv/scene_fx_temporal_cs.h"
 #include "../shaders/vulkan_spirv/scene_fx_volumetric_cs.h"
 }  // namespace shaders
@@ -91,12 +93,14 @@ const ShaderCode kComputeShaders[] = {
     REX_SCENE_FX_SHADER(scene_fx_bloom_blur_cs),
     REX_SCENE_FX_SHADER(scene_fx_material_copy_cs),
     REX_SCENE_FX_SHADER(scene_fx_material_copy_msaa_cs),
+    REX_SCENE_FX_SHADER(scene_fx_exposure_measure_cs),
+    REX_SCENE_FX_SHADER(scene_fx_exposure_adapt_cs),
 };
 #undef REX_SCENE_FX_SHADER
 
 // Sources of the draws' pixel shaders, then their constant buffer.
 constexpr uint32_t kCompositeSourceCount = 12;
-constexpr uint32_t kImageSourceCount = 1;
+constexpr uint32_t kImageSourceCount = 2;
 // Descriptor sets per pool.
 constexpr uint32_t kDescriptorPoolSets = 128;
 

@@ -225,6 +225,14 @@ class BaseHeap {
   bool Save(stream::ByteStream* stream);
   bool Restore(stream::ByteStream* stream);
 
+  // Save states (Memory::SaveState): the page table, and the committed pages
+  // read or written through `shadow`, this heap's start in a view of the
+  // backing that has no guest protections (nullptr: the table only, for a
+  // physical view heap whose pages the physical heap saves).
+  size_t SnapshotSize(bool with_pages);
+  void SaveSnapshot(std::vector<uint8_t>& out, size_t& pos, const uint8_t* shadow);
+  bool RestoreSnapshot(const std::vector<uint8_t>& in, size_t& pos, uint8_t* shadow);
+
   void Reset();
 
  protected:
@@ -544,6 +552,15 @@ class Memory {
   bool Save(stream::ByteStream* stream);
   bool Restore(stream::ByteStream* stream);
 
+  // In-memory save state of all guest memory: every heap's page table
+  // (physical views included) and every committed page, once per backing,
+  // copied through a second view of the backing so guest protections and
+  // GPU write watches are not touched. Call with the guest threads quiet
+  // (the game thread at a frame boundary); the caller resets what lives
+  // outside guest memory (GPU caches).
+  bool SaveState(std::vector<uint8_t>* out);
+  bool RestoreState(const std::vector<uint8_t>& in);
+
   //==========================================================================
   // Recompiled Code Function Table API
   //==========================================================================
@@ -588,6 +605,9 @@ class Memory {
   mutable std::mutex function_tables_mutex_;
 
   rex::memory::FileMappingHandle mapping_ = rex::memory::kFileMappingHandleInvalid;
+  // Save states: a second read/write view of the whole backing (lazily).
+  uint8_t* snapshot_view_ = nullptr;
+  uint8_t* SnapshotShadow(const BaseHeap& heap);
   uint8_t* mapping_base_ = nullptr;
   union {
     struct {

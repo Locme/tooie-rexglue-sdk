@@ -135,6 +135,11 @@ class CommandProcessor {
   bool Save(::rex::stream::ByteStream* stream);
   bool Restore(::rex::stream::ByteStream* stream);
 
+  // Save states (paused only): the ring buffer's read and write pointers.
+  // Setting them also writes the read pointer back to the guest.
+  void GetRingPointers(uint32_t* read, uint32_t* write) const;
+  void SetRingPointers(uint32_t read, uint32_t write);
+
  protected:
   // Occlusion query diagnostics: how the guest's queries were answered (the
   // host GPU's sample count or query_occlusion_fake_sample_count), logged
@@ -199,10 +204,14 @@ class CommandProcessor {
   void WriteLoopRangeFromMem(uint32_t start_index, uint32_t* base, uint32_t num_registers);
   void WriteREGISTERSRangeFromMem(uint32_t start_index, uint32_t* base, uint32_t num_registers);
 
+  // The guest's gamma ramps with the display_gamma user setting applied
+  // (identical to the guest's at 1.0). Backends upload these.
   const reg::DC_LUT_30_COLOR* gamma_ramp_256_entry_table() const {
-    return gamma_ramp_256_entry_table_;
+    return gamma_ramp_256_entry_table_adjusted_;
   }
-  const reg::DC_LUT_PWL_DATA* gamma_ramp_pwl_rgb() const { return gamma_ramp_pwl_rgb_[0]; }
+  const reg::DC_LUT_PWL_DATA* gamma_ramp_pwl_rgb() const {
+    return gamma_ramp_pwl_rgb_adjusted_[0];
+  }
   virtual void OnGammaRamp256EntryTableValueWritten() {}
   virtual void OnGammaRampPWLValueWritten() {}
 
@@ -335,6 +344,12 @@ class CommandProcessor {
   reg::DC_LUT_30_COLOR gamma_ramp_256_entry_table_[256] = {};
   reg::DC_LUT_PWL_DATA gamma_ramp_pwl_rgb_[128][3] = {};
   uint32_t gamma_ramp_rw_component_ = 0;
+  // display_gamma: rebuilt at a swap when the guest ramp or the setting changed.
+  void UpdateAdjustedGammaRamps();
+  reg::DC_LUT_30_COLOR gamma_ramp_256_entry_table_adjusted_[256] = {};
+  reg::DC_LUT_PWL_DATA gamma_ramp_pwl_rgb_adjusted_[128][3] = {};
+  bool gamma_ramp_guest_changed_ = true;
+  double gamma_ramp_adjusted_for_ = -1.0;
 };
 
 }  // namespace rex::graphics

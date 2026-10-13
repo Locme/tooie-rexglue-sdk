@@ -2,13 +2,16 @@
 // tonemapping): contrast-adaptive sharpening - after AMD FidelityFX CAS: a
 // cross-shaped sharpening kernel whose strength adapts to the local contrast,
 // so edges get crisper without halos or noise amplification - then color
-// grading, then the retro N64 16-bit color.
+// grading, then the retro N64 16-bit color. Eye adaptation's exposure (t1,
+// from scene_fx_exposure_cs) is applied first.
 
 #include "scene_fx_common.hlsli"
 
 // The final image (a copy), at render target pixels.
 FX_BINDING(0) Texture2D<float4> fx_image : register(t0);
-FX_EXTRA_CONSTANTS_BLOCK(1) {
+// 1x1: x = the adapted exposure's correction in stops.
+FX_BINDING(1) Texture2D<float4> fx_exposure : register(t1);
+FX_EXTRA_CONSTANTS_BLOCK(2) {
   // x = sharpness (0...1), y = 1 to sharpen.
   float4 fx_image_sharpen;
   // x = exposure (multiplier), y = contrast, z = saturation, w = vibrance.
@@ -29,7 +32,20 @@ FX_EXTRA_CONSTANTS_BLOCK(1) {
   // xy = screen pixel - render target pixel (a tile of a tiled frame), zw =
   // the screen's size.
   float4 fx_image_screen;
+  // x = 1 to apply the eye adaptation's exposure.
+  float4 fx_image_exposure;
 };
+
+// An exposure change on display-referred color that keeps white white: in
+// linear light, 1 - (1 - x)^e for a gain e, which has slope e in the darks
+// (a plain exposure there) and eases into the highlights instead of clipping.
+float3 FxAdaptExposure(float3 color, float stops) {
+  float gain = exp2(stops);
+  float3 linear_color = pow(saturate(color), 2.2);
+  float3 adapted = gain >= 1.0 ? 1.0 - pow(1.0 - linear_color, gain)
+                               : linear_color * gain;
+  return pow(saturate(adapted), 1.0 / 2.2);
+}
 
 // Daltonization: the colors a dichromat sees (Machado et al. 2009, severity
 // 1, linear RGB), and the difference they lose moved to channels they see.
@@ -91,6 +107,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
     color = saturate(((b + d + f + h) * weight + e) / (1.0 + 4.0 * weight));
   }
 
+  if (fx_image_exposure.x > 0.0) {
+    color = FxAdaptExposure(color, fx_exposure.Load(int3(0, 0, 0)).x);
+  }
   color *= fx_image_grade.x * fx_image_white.rgb;
   float luminance = FxLuminance(color);
   // Vibrance: saturates muted colors more than already vivid ones.

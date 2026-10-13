@@ -90,6 +90,11 @@ class GraphicsSystem : public system::IGraphicsSystem {
   bool Save(::rex::stream::ByteStream* stream);
   bool Restore(::rex::stream::ByteStream* stream);
 
+  void PauseGpu() override { Pause(); }
+  void ResumeGpu() override { Resume(); }
+  bool GetRingPointers(uint32_t* read, uint32_t* write) override;
+  void RestoreRingPointersAndClearCaches(uint32_t read, uint32_t write) override;
+
  protected:
   GraphicsSystem();
 

@@ -11,6 +11,8 @@
  */
 
 #include <memory>
+#include <mutex>
+#include <string>
 #include <vector>
 
 #include <rex/input/device_assignment.h>
@@ -36,6 +38,9 @@ class InputSystem : public system::IInputSystem {
   void Shutdown() override;
 
   void AddDriver(std::unique_ptr<InputDriver> driver);
+  /// A pad driver that only enumerates while the input_backend cvar names
+  /// `backend` ("sdl", "xinput"), so the backend can change while running.
+  void AddDriver(std::unique_ptr<InputDriver> driver, std::string backend);
   void AttachWindow(rex::ui::Window* window);
   void SetActiveCallback(std::function<bool()> callback);
 
@@ -46,6 +51,13 @@ class InputSystem : public system::IInputSystem {
   X_RESULT GetState(uint32_t user_index, X_INPUT_STATE* out_state);
   X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration);
   X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags, X_INPUT_KEYSTROKE* out_keystroke);
+  /// How far the user's pads with a gyro turned since the last call, summed,
+  /// in degrees (pitch, yaw, roll; see InputDriver::GetDeviceMotion).
+  /// X_ERROR_DEVICE_NOT_CONNECTED when none of them has a gyro.
+  X_RESULT GetMotion(uint32_t user_index, float out_degrees[3]);
+  /// Whether a pad (or, for user 0, any device) is assigned to the user, as of
+  /// the last poll. Cheap: doesn't re-enumerate.
+  bool IsUserConnected(uint32_t user_index);
 
  private:
   /// Re-enumerates every driver and notifies the assignment when the set
@@ -57,6 +69,7 @@ class InputSystem : public system::IInputSystem {
   rex::ui::Window* window_ = nullptr;
 
   std::vector<std::unique_ptr<InputDriver>> drivers_;
+  std::vector<std::string> driver_backends_;  // parallel to drivers_, "" = always
 
   std::unique_ptr<DeviceAssignment> assignment_;
   ActiveDeviceTracker active_devices_;
@@ -65,6 +78,12 @@ class InputSystem : public system::IInputSystem {
   // does not renumber pad two.
   std::vector<DeviceInfo> devices_;
   std::vector<InputDriver*> device_owners_;
+
+  // The guest polls from its threads while the host UI (a settings window
+  // driven by the pad) polls from the UI thread; RefreshDevices rebuilds
+  // devices_ on every call, so the two raced and crashed. Recursive: an
+  // assignment or driver may call back in.
+  std::recursive_mutex mutex_;
 };
 
 /// Create a default InputSystem with SDL + NOP drivers.

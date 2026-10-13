@@ -412,6 +412,21 @@ void GraphicsSystem::Resume() {
   command_processor_->Resume();
 }
 
+bool GraphicsSystem::GetRingPointers(uint32_t* read, uint32_t* write) {
+  if (!command_processor_ || !paused_) return false;
+  command_processor_->GetRingPointers(read, write);
+  return true;
+}
+
+void GraphicsSystem::RestoreRingPointersAndClearCaches(uint32_t read, uint32_t write) {
+  if (!command_processor_ || !paused_) return;
+  command_processor_->SetRingPointers(read, write);
+  // Textures, render targets and shared memory were built from the guest
+  // memory just replaced; the command processor drops them on resume.
+  ClearCaches();
+  InvalidateGpuMemory();
+}
+
 bool GraphicsSystem::Save(::rex::stream::ByteStream* stream) {
   stream->Write<uint32_t>(interrupt_callback_);
   stream->Write<uint32_t>(interrupt_callback_data_);

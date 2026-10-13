@@ -18,9 +18,11 @@
 #include <rex/ui/window.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string_view>
 
 REXCVAR_DEFINE_BOOL(mnk_mode, false, "Input", "Enable keyboard/mouse controller emulation");
@@ -136,6 +138,9 @@ bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t l
 }
 
 std::atomic<bool> mouse_look_active{true};
+std::atomic<bool> mouse_aim_active{false};
+std::mutex mouse_aim_mutex;
+float mouse_aim_dx = 0.0f, mouse_aim_dy = 0.0f;
 
 }  // namespace
 
@@ -145,6 +150,26 @@ void SetMouseLookActive(bool active) {
 
 bool IsMouseLookActive() {
   return mouse_look_active.load(std::memory_order_relaxed);
+}
+
+void SetMouseAimActive(bool active) {
+  if (!active) {
+    std::lock_guard lock(mouse_aim_mutex);
+    mouse_aim_dx = mouse_aim_dy = 0.0f;
+  }
+  mouse_aim_active.store(active, std::memory_order_relaxed);
+}
+
+bool IsMouseAimActive() {
+  return mouse_aim_active.load(std::memory_order_relaxed);
+}
+
+bool TakeMouseAim(float& dx, float& dy) {
+  std::lock_guard lock(mouse_aim_mutex);
+  dx = mouse_aim_dx;
+  dy = mouse_aim_dy;
+  mouse_aim_dx = mouse_aim_dy = 0.0f;
+  return dx != 0.0f || dy != 0.0f;
 }
 
 using rex::ui::VirtualKey;
@@ -333,9 +358,15 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
 
   if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
     double sensitivity = REXCVAR_GET(mnk_sensitivity);
-    constexpr double kBaseScale = 200.0;
-    rx += static_cast<int32_t>(double(mouse_dx_) * sensitivity * kBaseScale);
-    ry += static_cast<int32_t>(double(-mouse_dy_) * sensitivity * kBaseScale);
+    if (IsMouseAimActive()) {
+      std::lock_guard lock(mouse_aim_mutex);
+      mouse_aim_dx += float(double(mouse_dx_) * sensitivity);
+      mouse_aim_dy += float(double(mouse_dy_) * sensitivity);
+    } else {
+      constexpr double kBaseScale = 200.0;
+      rx += static_cast<int32_t>(double(mouse_dx_) * sensitivity * kBaseScale);
+      ry += static_cast<int32_t>(double(-mouse_dy_) * sensitivity * kBaseScale);
+    }
   }
   // Drained unconditionally: deltas keep accumulating in OnMouseMove while the
   // mouse is off, and toggling it on would otherwise dump the whole backlog

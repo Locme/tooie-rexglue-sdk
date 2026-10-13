@@ -59,6 +59,8 @@ REXCVAR_DEFINE_BOOL(vulkan_tessellation_wireframe, false, "GPU/Vulkan",
                     "Render tessellation as wireframe")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DECLARE(bool, scene_fx_retro_3point_filter);
+
 namespace rex::graphics::vulkan {
 
 namespace {
@@ -986,6 +988,8 @@ SpirvShaderTranslator::Modification VulkanPipelineCache::GetCurrentPixelShaderMo
     modification.pixel.param_gen_interpolator = 0;
     modification.pixel.param_gen_point = 0;
   }
+
+  modification.pixel.three_point_filter = uint32_t(REXCVAR_GET(scene_fx_retro_3point_filter));
 
   if (render_target_cache_.GetPath() == RenderTargetCache::Path::kHostRenderTargets) {
     using DepthStencilMode = SpirvShaderTranslator::Modification::DepthStencilMode;

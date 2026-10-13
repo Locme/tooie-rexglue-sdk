@@ -1847,9 +1847,107 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
           }
           texture_parameters.coords =
               builder_->createCompositeConstruct(type_float3_, id_vector_temp_);
-          SampleTexture(texture_parameters, image_operands_mask, image_2d_array_or_cube_unsigned,
-                        image_2d_array_or_cube_signed, sampler, is_any_unsigned, is_any_signed,
-                        sample_result_unsigned, sample_result_signed);
+          if (is_pixel_shader() && GetSpirvShaderModification().pixel.three_point_filter &&
+              instr.dimension == xenos::FetchOpDimension::k2D &&
+              instr.attributes.mag_filter != xenos::TextureFilter::kPoint) {
+            // N64 3-point filtering where a linear-filtered texture is magnified
+            // (where the N64 look shows); minified, it's sampled as usual.
+            spv::Id mag_is_linear = builder_->makeBoolConstant(true);
+            if (instr.attributes.mag_filter == xenos::TextureFilter::kUseFetchConst) {
+              id_vector_temp_.clear();
+              id_vector_temp_.push_back(const_int_0_);
+              id_vector_temp_.push_back(
+                  builder_->makeIntConstant(int((fetch_constant_word_0_index + 3) >> 2)));
+              id_vector_temp_.push_back(
+                  builder_->makeIntConstant(int((fetch_constant_word_0_index + 3) & 3)));
+              spv::Id fetch_constant_word_3 = builder_->createLoad(
+                  builder_->createAccessChain(spv::StorageClassUniform, uniform_fetch_constants_,
+                                              id_vector_temp_),
+                  spv::NoPrecision);
+              mag_is_linear = builder_->createBinOp(
+                  spv::OpIEqual, type_bool_,
+                  builder_->createTriOp(spv::OpBitFieldUExtract, type_uint_,
+                                        fetch_constant_word_3, builder_->makeUintConstant(19),
+                                        builder_->makeUintConstant(2)),
+                  builder_->makeUintConstant(uint32_t(xenos::TextureFilter::kLinear)));
+            }
+            // The guest size (the fetch constant's, minus 1, in word 2).
+            id_vector_temp_.clear();
+            id_vector_temp_.push_back(const_int_0_);
+            id_vector_temp_.push_back(
+                builder_->makeIntConstant(int((fetch_constant_word_0_index + 2) >> 2)));
+            id_vector_temp_.push_back(
+                builder_->makeIntConstant(int((fetch_constant_word_0_index + 2) & 3)));
+            spv::Id fetch_constant_word_2 = builder_->createLoad(
+                builder_->createAccessChain(spv::StorageClassUniform, uniform_fetch_constants_,
+                                            id_vector_temp_),
+                spv::NoPrecision);
+            id_vector_temp_.clear();
+            for (uint32_t i = 0; i < 2; ++i) {
+              id_vector_temp_.push_back(builder_->createUnaryOp(
+                  spv::OpConvertUToF, type_float_,
+                  builder_->createBinOp(
+                      spv::OpIAdd, type_uint_,
+                      builder_->createTriOp(spv::OpBitFieldUExtract, type_uint_,
+                                            fetch_constant_word_2,
+                                            builder_->makeUintConstant(13 * i),
+                                            builder_->makeUintConstant(13)),
+                      builder_->makeUintConstant(1))));
+            }
+            spv::Id size_2d = builder_->createCompositeConstruct(type_float2_, id_vector_temp_);
+            spv::Id is_magnified;
+            if (use_computed_lod) {
+              // Texels per pixel along the longer screen axis, squared.
+              spv::Id texels_h = builder_->createNoContractionBinOp(spv::OpFMul, type_float2_,
+                                                                    gradients_h, size_2d);
+              spv::Id texels_v = builder_->createNoContractionBinOp(spv::OpFMul, type_float2_,
+                                                                    gradients_v, size_2d);
+              spv::Id rho_squared = builder_->createBinBuiltinCall(
+                  type_float_, ext_inst_glsl_std_450_, GLSLstd450NMax,
+                  builder_->createBinOp(spv::OpDot, type_float_, texels_h, texels_h),
+                  builder_->createBinOp(spv::OpDot, type_float_, texels_v, texels_v));
+              is_magnified = builder_->createBinOp(spv::OpFOrdLessThanEqual, type_bool_,
+                                                   rho_squared, builder_->makeFloatConstant(1.0f));
+            } else {
+              is_magnified = builder_->createBinOp(spv::OpFOrdLessThanEqual, type_bool_, lod,
+                                                   const_float_0_);
+            }
+            spv::Id use_three_point =
+                builder_->createBinOp(spv::OpLogicalAnd, type_bool_, mag_is_linear, is_magnified);
+            SpirvBuilder::IfBuilder if_three_point(use_three_point,
+                                                   spv::SelectionControlDontFlattenMask, *builder_);
+            spv::Id three_point_unsigned, three_point_signed;
+            {
+              id_vector_temp_.clear();
+              for (uint32_t i = 0; i < 2; ++i) {
+                id_vector_temp_.push_back(coordinates[i]);
+              }
+              spv::Builder::TextureParameters three_point_parameters = texture_parameters;
+              SampleTextureThreePoint(
+                  three_point_parameters,
+                  builder_->createCompositeConstruct(type_float2_, id_vector_temp_), size_2d,
+                  coordinates[2], image_2d_array_or_cube_unsigned, image_2d_array_or_cube_signed,
+                  sampler, is_any_unsigned, is_any_signed, three_point_unsigned,
+                  three_point_signed);
+            }
+            if_three_point.makeBeginElse();
+            spv::Id usual_unsigned, usual_signed;
+            {
+              SampleTexture(texture_parameters, image_operands_mask,
+                            image_2d_array_or_cube_unsigned, image_2d_array_or_cube_signed,
+                            sampler, is_any_unsigned, is_any_signed, usual_unsigned,
+                            usual_signed);
+            }
+            if_three_point.makeEndIf();
+            sample_result_unsigned =
+                if_three_point.createMergePhi(three_point_unsigned, usual_unsigned);
+            sample_result_signed = if_three_point.createMergePhi(three_point_signed, usual_signed);
+          } else {
+            SampleTexture(texture_parameters, image_operands_mask,
+                          image_2d_array_or_cube_unsigned, image_2d_array_or_cube_signed, sampler,
+                          is_any_unsigned, is_any_signed, sample_result_unsigned,
+                          sample_result_signed);
+          }
         }
 
         // Swizzle the result components manually if needed, to `result`.
@@ -2175,6 +2273,88 @@ size_t SpirvShaderTranslator::FindOrAddSamplerBinding(uint32_t fetch_constant,
     main_interface_.push_back(new_sampler_binding.variable);
   }
   return new_sampler_binding_index;
+}
+
+void SpirvShaderTranslator::SampleTextureThreePoint(
+    spv::Builder::TextureParameters& texture_parameters, spv::Id coordinates_2d, spv::Id size_2d,
+    spv::Id layer, spv::Id image_unsigned, spv::Id image_signed, spv::Id sampler,
+    spv::Id is_any_unsigned, spv::Id is_any_signed, spv::Id& result_unsigned_out,
+    spv::Id& result_signed_out) {
+  // offset = fract(uv * size - 0.5), minus 1 in the upper-right triangle of the
+  // texel square; the three samples are at texel centers (so the linear
+  // sampler returns single texels), from the base level.
+  id_vector_temp_.clear();
+  id_vector_temp_.push_back(builder_->makeFloatConstant(0.5f));
+  id_vector_temp_.push_back(builder_->makeFloatConstant(0.5f));
+  spv::Id const_float2_half = builder_->makeCompositeConstant(type_float2_, id_vector_temp_);
+  spv::Id offset = builder_->createUnaryBuiltinCall(
+      type_float2_, ext_inst_glsl_std_450_, GLSLstd450Fract,
+      builder_->createNoContractionBinOp(
+          spv::OpFSub, type_float2_,
+          builder_->createNoContractionBinOp(spv::OpFMul, type_float2_, coordinates_2d, size_2d),
+          const_float2_half));
+  spv::Id offset_x = builder_->createCompositeExtract(offset, type_float_, 0);
+  spv::Id offset_y = builder_->createCompositeExtract(offset, type_float_, 1);
+  spv::Id upper = builder_->createBinBuiltinCall(
+      type_float_, ext_inst_glsl_std_450_, GLSLstd450Step, builder_->makeFloatConstant(1.0f),
+      builder_->createNoContractionBinOp(spv::OpFAdd, type_float_, offset_x, offset_y));
+  offset_x = builder_->createNoContractionBinOp(spv::OpFSub, type_float_, offset_x, upper);
+  offset_y = builder_->createNoContractionBinOp(spv::OpFSub, type_float_, offset_y, upper);
+  spv::Id sign_x =
+      builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_, GLSLstd450FSign,
+                                       offset_x);
+  spv::Id sign_y =
+      builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_, GLSLstd450FSign,
+                                       offset_y);
+  spv::Id texel_offsets[3][2] = {
+      {offset_x, offset_y},
+      {builder_->createNoContractionBinOp(spv::OpFSub, type_float_, offset_x, sign_x), offset_y},
+      {offset_x, builder_->createNoContractionBinOp(spv::OpFSub, type_float_, offset_y, sign_y)},
+  };
+  texture_parameters.lod = const_float_0_;
+  texture_parameters.gradX = spv::NoResult;
+  texture_parameters.gradY = spv::NoResult;
+  spv::Id samples_unsigned[3], samples_signed[3];
+  for (uint32_t i = 0; i < 3; ++i) {
+    id_vector_temp_.clear();
+    id_vector_temp_.push_back(texel_offsets[i][0]);
+    id_vector_temp_.push_back(texel_offsets[i][1]);
+    spv::Id position = builder_->createNoContractionBinOp(
+        spv::OpFSub, type_float2_, coordinates_2d,
+        builder_->createNoContractionBinOp(
+            spv::OpFDiv, type_float2_,
+            builder_->createCompositeConstruct(type_float2_, id_vector_temp_), size_2d));
+    id_vector_temp_.clear();
+    id_vector_temp_.push_back(builder_->createCompositeExtract(position, type_float_, 0));
+    id_vector_temp_.push_back(builder_->createCompositeExtract(position, type_float_, 1));
+    id_vector_temp_.push_back(layer);
+    texture_parameters.coords = builder_->createCompositeConstruct(type_float3_, id_vector_temp_);
+    SampleTexture(texture_parameters, spv::ImageOperandsLodMask, image_unsigned, image_signed,
+                  sampler, is_any_unsigned, is_any_signed, samples_unsigned[i],
+                  samples_signed[i]);
+  }
+  spv::Id weight_x =
+      builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_, GLSLstd450FAbs,
+                                       offset_x);
+  spv::Id weight_y =
+      builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_, GLSLstd450FAbs,
+                                       offset_y);
+  for (uint32_t i = 0; i < 2; ++i) {
+    const spv::Id* samples = i ? samples_signed : samples_unsigned;
+    spv::Id result = builder_->createNoContractionBinOp(
+        spv::OpFAdd, type_float4_, samples[0],
+        builder_->createNoContractionBinOp(
+            spv::OpVectorTimesScalar, type_float4_,
+            builder_->createNoContractionBinOp(spv::OpFSub, type_float4_, samples[1], samples[0]),
+            weight_x));
+    result = builder_->createNoContractionBinOp(
+        spv::OpFAdd, type_float4_, result,
+        builder_->createNoContractionBinOp(
+            spv::OpVectorTimesScalar, type_float4_,
+            builder_->createNoContractionBinOp(spv::OpFSub, type_float4_, samples[2], samples[0]),
+            weight_y));
+    (i ? result_signed_out : result_unsigned_out) = result;
+  }
 }
 
 void SpirvShaderTranslator::SampleTexture(spv::Builder::TextureParameters& texture_parameters,

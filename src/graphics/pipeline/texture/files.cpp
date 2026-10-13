@@ -1,6 +1,7 @@
 #include <rex/graphics/pipeline/texture/files.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -534,6 +535,18 @@ std::shared_ptr<Replacement> LoadReplacement(const std::filesystem::path& direct
     return nullptr;
   }
   return replacement;
+}
+
+namespace {
+std::atomic<uint64_t> g_reload_generation{0};
+}  // namespace
+
+void RequestReload() {
+  g_reload_generation.fetch_add(1);
+}
+
+uint64_t ReloadGeneration() {
+  return g_reload_generation.load();
 }
 
 }  // namespace rex::graphics::texture_files

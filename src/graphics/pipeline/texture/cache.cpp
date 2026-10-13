@@ -271,6 +271,8 @@ bool TextureCache::GetConfigDrawResolutionScale(uint32_t& x_out, uint32_t& y_out
 
 void TextureCache::ClearCache() {
   DestroyAllTextures();
+  // texture_replacements: looked up again (RequestReload, files changed).
+  replacements_.clear();
 }
 
 void TextureCache::CompletedSubmissionUpdated(uint64_t completed_submission_index) {

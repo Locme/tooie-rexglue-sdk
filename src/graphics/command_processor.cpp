@@ -301,6 +301,49 @@ CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
 
 CommandProcessor::~CommandProcessor() = default;
 
+void CommandProcessor::UpdateAdjustedGammaRamps() {
+  const double gamma = std::clamp(double(REXCVAR_GET(display_gamma)), 0.25, 4.0);
+  if (!gamma_ramp_guest_changed_ && gamma == gamma_ramp_adjusted_for_) return;
+  const bool setting_changed = gamma != gamma_ramp_adjusted_for_;
+  gamma_ramp_guest_changed_ = false;
+  gamma_ramp_adjusted_for_ = gamma;
+  // out = in ^ (1 / gamma) on the ramp's output: above 1 lifts the dark
+  // tones (brighter), below 1 deepens them; black and white stay put.
+  const double exponent = 1.0 / gamma;
+  auto curve = [exponent](double v) {
+    return v <= 0.0 ? 0.0 : v >= 1.0 ? 1.0 : std::pow(v, exponent);
+  };
+  for (uint32_t i = 0; i < 256; ++i) {
+    const reg::DC_LUT_30_COLOR& in = gamma_ramp_256_entry_table_[i];
+    reg::DC_LUT_30_COLOR& out = gamma_ramp_256_entry_table_adjusted_[i];
+    out = in;
+    auto adjust10 = [&](uint32_t c) {
+      return uint32_t(std::lround(curve(c / 1023.0) * 1023.0));
+    };
+    out.color_10_blue = adjust10(in.color_10_blue);
+    out.color_10_green = adjust10(in.color_10_green);
+    out.color_10_red = adjust10(in.color_10_red);
+  }
+  // PWL: 128 segments of 8 steps, value = base + delta * step / 8 (16-bit).
+  for (uint32_t c = 0; c < 3; ++c) {
+    for (uint32_t i = 0; i < 128; ++i) {
+      const reg::DC_LUT_PWL_DATA& in = gamma_ramp_pwl_rgb_[i][c];
+      reg::DC_LUT_PWL_DATA& out = gamma_ramp_pwl_rgb_adjusted_[i][c];
+      out = in;
+      const double start = curve(in.base / 65535.0) * 65535.0;
+      const double end = curve(std::min(65535.0, double(in.base) + double(in.delta)) / 65535.0) *
+                         65535.0;
+      out.base = uint32_t(std::lround(start));
+      out.delta = in.delta ? uint32_t(std::lround(std::max(0.0, end - start))) : 0;
+    }
+  }
+  if (setting_changed) {
+    // Make the backends upload the new ramps.
+    OnGammaRamp256EntryTableValueWritten();
+    OnGammaRampPWLValueWritten();
+  }
+}
+
 bool CommandProcessor::Initialize() {
   // Initialize the gamma ramps to their default (linear) values - taken from
   // what games set when starting with the sRGB (return value 1)
@@ -320,6 +363,8 @@ bool CommandProcessor::Initialize() {
       gamma_ramp_pwl_rgb_[i][j] = gamma_ramp_entry;
     }
   }
+
+  UpdateAdjustedGammaRamps();
 
   worker_running_ = true;
   worker_thread_ = system::object_ref<system::XHostThread>(
@@ -568,6 +613,22 @@ bool CommandProcessor::Restore(::rex::stream::ByteStream* stream) {
   return true;
 }
 
+void CommandProcessor::GetRingPointers(uint32_t* read, uint32_t* write) const {
+  assert_true(paused_);
+  *read = read_ptr_index_;
+  *write = write_ptr_index_.load();
+}
+
+void CommandProcessor::SetRingPointers(uint32_t read, uint32_t write) {
+  assert_true(paused_);
+  read_ptr_index_ = read;
+  write_ptr_index_.store(write);
+  if (read_ptr_writeback_ptr_) {
+    memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
+                                     read_ptr_index_);
+  }
+}
+
 bool CommandProcessor::SetupContext() {
   return true;
 }
@@ -679,6 +740,7 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
                         rex::memory::Reinterpret<uint32_t>(new_gamma_ramp_rw_index));
         }
         if (write_gamma_ramp_component) {
+          gamma_ramp_guest_changed_ = true;
           OnGammaRamp256EntryTableValueWritten();
         }
       } break;
@@ -714,6 +776,7 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
                         rex::memory::Reinterpret<uint32_t>(new_gamma_ramp_rw_index));
         }
         if (write_gamma_ramp_component) {
+          gamma_ramp_guest_changed_ = true;
           OnGammaRampPWLValueWritten();
         }
       } break;
@@ -747,6 +810,7 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
         WriteRegister(XE_GPU_REG_DC_LUT_RW_INDEX,
                       rex::memory::Reinterpret<uint32_t>(new_gamma_ramp_rw_index));
         if (gamma_ramp_write_enable_mask) {
+          gamma_ramp_guest_changed_ = true;
           OnGammaRamp256EntryTableValueWritten();
         }
       } break;
@@ -1222,6 +1286,7 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
   reader->AdvanceRead((count - 4) * sizeof(uint32_t));
 
   FrameLogOnSwap();
+  UpdateAdjustedGammaRamps();
   IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
   RebuildContextIfRequested();
 

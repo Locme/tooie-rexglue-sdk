@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
@@ -147,6 +148,11 @@ class SceneEffects {
     // Full resolution: the material tagged in the stencil (TagMaterial) of
     // what's drawn at each pixel, TextureCache::Material (0 = unknown).
     kMaterial,
+    // Eye adaptation: each tile's measured brightness this frame (one texel
+    // per tile), and the 1x1 adapted exposure, this frame and the previous.
+    kExposureTiles,
+    kExposure0,
+    kExposure1,
 
     kCount,
   };
@@ -194,6 +200,8 @@ class SceneEffects {
     kBloomBlur,
     kMaterialCopy,
     kMaterialCopyMsaa,
+    kExposureMeasure,
+    kExposureAdapt,
 
     kCount,
   };
@@ -404,6 +412,12 @@ class SceneEffects {
   bool GetHeightRow(const CameraBasis& basis, float height_out[4]) const;
   bool GetSunDirection(const CameraBasis& basis, float toward_sun_out[3]) const;
   static void GetSunTint(float tint_out[3]);
+  // "r,g,b" (missing components 1, negative 0).
+  static void ParseColor(const char* color, float color_out[3]);
+  // The underwater tint is on and the camera is underwater.
+  static bool Underwater();
+  // Water reflections are on and the game gave a water level.
+  static bool WaterReflectionsWanted();
   // scene_fx_sun_direction, normalized; false when unset or unparsable.
   static bool GetConfiguredSunDirection(float toward_sun_world_out[3]);
   // The sun, the shadow cascades captured this frame and the effects'
@@ -474,6 +488,11 @@ class SceneEffects {
   void ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, uint32_t width,
                          uint32_t height, int32_t screen_offset_x, int32_t screen_offset_y,
                          bool trace);
+  // Eye adaptation: at a frame's first image, adapts the exposure toward the
+  // previous frame's measurements; then measures this tile of `image` (rect
+  // within the 3D's area). Returns the exposure texture the image pass reads,
+  // or kCount if none.
+  Texture UpdateEyeAdaptation(Texture image, const Rect& rect, const Rect& area);
   // SMAA of kFinalImage's rect into kSmaaImage; false if it could not run.
   // The multiply and add composites, or with scene_fx_16bit on an 8-bit
   // (sdr) scene, the resolve.
@@ -533,7 +552,7 @@ class SceneEffects {
   Texture volumetric_result_ = Texture::kVolumetric;
   // The composite's extra constants for this frame (the fog's, and the
   // effects' strengths).
-  float composite_constants_[7][4] = {};
+  float composite_constants_[9][4] = {};
 
   Camera camera_ = {};
   bool camera_logged_ = false;
@@ -600,6 +619,13 @@ class SceneEffects {
   uint32_t scene_color_index_ = 0;
   bool scene_color_valid_[2] = {};
   uint32_t sky_index_ = 0;
+  // Eye adaptation: the exposure's ping-pong index, the frame it was adapted
+  // in, the tiles measured in that frame, and when (for the adaptation rate).
+  uint32_t exposure_index_ = 0;
+  uint64_t exposure_frame_ = UINT64_MAX;
+  uint32_t exposure_tile_count_ = 0;
+  bool exposure_valid_ = false;
+  std::chrono::steady_clock::time_point exposure_time_{};
   uint32_t volumetric_history_index_ = 0;
   bool volumetric_history_valid_ = false;
   uint32_t volumetric_history_scale_ = 0;

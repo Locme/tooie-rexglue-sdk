@@ -127,4 +127,12 @@ bool DumpBaseLevel(const std::filesystem::path& directory, const std::string& st
                    const uint8_t* guest_base, const Description& description,
                    uint32_t swizzle = kIdentitySwizzle);
 
+// texture_replacements, live: asks the GPU thread to drop its loaded
+// replacements and its textures at the end of the current frame, so the
+// replacement folders are looked up again (e.g. after the files changed or
+// the cvar changed). Any thread.
+void RequestReload();
+// Bumped by every RequestReload (the command processors compare it).
+uint64_t ReloadGeneration();
+
 }  // namespace rex::graphics::texture_files
