@@ -20,6 +20,7 @@
 #include <rex/kernel/xam/private.h>
 #include <rex/logging.h>
 #include <rex/math.h>
+#include <rex/runtime.h>
 #include <rex/hook.h>
 #include <rex/input/input_system.h>
 #include <rex/types.h>
