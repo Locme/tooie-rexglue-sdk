@@ -63,6 +63,42 @@ float FxReprojectedPreviousDepth(float2 target) {
   }
   return 1.0e6;
 }
+
+float FxTileSourceDistance(uint x, int y) {
+  int2 source = int2(int(x), y) - fx_screen_offset;
+#ifdef FX_MSAA
+  float device_depth = fx_source.Load(source, 0);
+#else
+  float device_depth = fx_source.Load(int3(source, 0));
+#endif
+  return FxViewDistance(device_depth);
+}
+
+// The surface seen at the tile's last three rows in column x, extended to row
+// y below the tile, if it is planar there and y is near enough.
+bool FxContinueTileSurface(uint x, uint y, out float distance) {
+  distance = 1.0e6;
+  int last = int(fx_pass_rect.w) - 1;
+  int rows_below = int(y) - last;
+  if (last < int(fx_pass_rect.y) + 2 || rows_below > max(16, int(fx_scene_size.y) / 12)) {
+    return false;
+  }
+  float d1 = FxTileSourceDistance(x, last);
+  float d2 = FxTileSourceDistance(x, last - 1);
+  float d3 = FxTileSourceDistance(x, last - 2);
+  if (!(d1 > 0.0 && d1 < 1.0e5 && d2 > 0.0 && d2 < 1.0e5 && d3 > 0.0 && d3 < 1.0e5)) {
+    return false;
+  }
+  float i1 = 1.0 / d1, i2 = 1.0 / d2, i3 = 1.0 / d3;
+  float slope = i1 - i2;
+  if (abs(slope - (i2 - i3)) > 0.02 * i1 + 1.0e-7) {
+    return false;  // an edge or a curve: not a plane to continue
+  }
+  float inverse = i1 + slope * float(rows_below);
+  // Past the plane's horizon: the plane never reaches that row.
+  distance = inverse > 0.0 ? min(1.0 / inverse, 1.0e6) : 1.0e6;
+  return true;
+}
 #endif
 
 [numthreads(8, 8, 1)]
@@ -86,6 +122,16 @@ void main(uint3 id : SV_DispatchThreadID) {
       float filled = 1.0e6;
       if (fx_depth_params.x > 0.0) {
         filled = FxReprojectedPreviousDepth(float2(id.xy) + 0.5);
+      }
+      // Just below the tile, the surface at its last rows continued (exact
+      // for planes: 1 / distance is linear on the screen), unless something
+      // clearly nearer was there in the previous frame. The reprojection
+      // alone is off by up to half a pixel, a little in front of sloped
+      // ground and walls: dark lines along the tile's lower edge.
+      float continued;
+      if (FxContinueTileSurface(id.x, id.y, continued) &&
+          !(filled < continued * 0.95)) {
+        filled = continued;
       }
       fx_depth[id.xy] = filled;
       return;

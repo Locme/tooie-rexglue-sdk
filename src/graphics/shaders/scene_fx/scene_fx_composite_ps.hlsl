@@ -375,14 +375,18 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (fx_debug_mode == FX_DEBUG_AO) {
     return float4(ao, ao, ao, 1.0);
   }
+  // The scattered light is a small addition to an 8-bit scene: amplified,
+  // so the shape of the shafts and of the fog shows.
   if (fx_debug_mode == FX_DEBUG_VOLUMETRICS) {
-    return float4(shafts / (1.0 + shafts), 1.0);
+    float3 shown = shafts * 40.0;
+    return float4(shown / (1.0 + shown), 1.0);
   }
   if (fx_debug_mode == FX_DEBUG_GI) {
     return float4(indirect / (1.0 + indirect), 1.0);
   }
   if (fx_debug_mode == FX_DEBUG_FOG) {
-    return float4(fog_light / (1.0 + fog_light), 1.0);
+    float3 shown = fog_light * 4.0;
+    return float4(shown / (1.0 + shown), 1.0);
   }
   if (fx_debug_mode == FX_DEBUG_CONTACT_SHADOWS) {
     return float4(contact, contact, contact, 1.0);
