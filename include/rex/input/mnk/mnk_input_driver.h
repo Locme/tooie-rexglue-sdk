@@ -25,6 +25,15 @@ namespace rex::input::mnk {
 void SetMouseLookActive(bool active);
 bool IsMouseLookActive();
 
+// Mouse aiming (a game's first-person view): while active, mouse motion is
+// not turned into the right stick but kept, in mnk_sensitivity-scaled
+// counts, for the game to take with TakeMouseAim (which empties it). Any
+// thread.
+void SetMouseAimActive(bool active);
+bool IsMouseAimActive();
+// The motion kept since the last take (+x right, +y down); false if none.
+bool TakeMouseAim(float& dx, float& dy);
+
 class MnkInputDriver final : public InputDriver,
                              public rex::ui::WindowInputListener,
                              public rex::ui::WindowListener {
