@@ -25,5 +25,11 @@ void SetSceneWaterLevel(float height);
 void ClearSceneWaterLevel();
 // False when there is no water level.
 bool GetSceneWaterLevel(float& height_out);
+// Several water surfaces in view at different heights (pools, a lagoon and
+// a river): up to kMaxSceneWaterLevels; count 0 clears.
+constexpr int kMaxSceneWaterLevels = 4;
+void SetSceneWaterLevels(const float* heights, int count);
+// The count, heights_out gets up to kMaxSceneWaterLevels.
+int GetSceneWaterLevels(float* heights_out);
 
 }  // namespace rex::system

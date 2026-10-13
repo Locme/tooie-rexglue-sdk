@@ -415,6 +415,7 @@ struct ReflectionConstants {
   float up[4];
   float params[4];
   float water[4];
+  float water_levels[4];
   float water_u[4];
   float water_v[4];
 };
@@ -1776,10 +1777,17 @@ bool SceneEffects::ComputeReflections() {
   // The intensities are applied in the shader (water has its own).
   rc.water[2] =
       REXCVAR_GET(scene_fx_reflections) ? float(REXCVAR_GET(scene_fx_reflections_intensity)) : 0.0f;
-  float water_level;
-  if (REXCVAR_GET(scene_fx_water_reflections) && rex::system::GetSceneWaterLevel(water_level) &&
-      !Underwater()) {
-    rc.water[0] = water_level * basis.up_sign - height[3];
+  float water_levels[rex::system::kMaxSceneWaterLevels];
+  int water_level_count = REXCVAR_GET(scene_fx_water_reflections)
+                              ? rex::system::GetSceneWaterLevels(water_levels)
+                              : 0;
+  if (water_level_count && !Underwater()) {
+    static_assert(rex::system::kMaxSceneWaterLevels == 4);
+    for (int i = 0; i < 4; ++i) {
+      // Unused: 1 (above the camera, never water).
+      rc.water_levels[i] =
+          i < water_level_count ? water_levels[i] * basis.up_sign - height[3] : 1.0f;
+    }
     rc.water[1] = float(REXCVAR_GET(scene_fx_water_reflections_strength));
     static const auto kStart = std::chrono::steady_clock::now();
     rc.water[3] = float(
@@ -2097,8 +2105,8 @@ bool SceneEffects::Underwater() {
 }
 
 bool SceneEffects::WaterReflectionsWanted() {
-  float level;
-  return REXCVAR_GET(scene_fx_water_reflections) && rex::system::GetSceneWaterLevel(level);
+  float levels[rex::system::kMaxSceneWaterLevels];
+  return REXCVAR_GET(scene_fx_water_reflections) && rex::system::GetSceneWaterLevels(levels) > 0;
 }
 
 bool SceneEffects::IsLetterboxed(uint32_t screen_height) const {

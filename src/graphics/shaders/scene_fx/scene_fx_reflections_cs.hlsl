@@ -7,11 +7,12 @@
 // at grazing angles). Fades out toward the screen's edges and with distance,
 // where nothing is known. Output: rgb = reflected light, a = confidence.
 //
-// Water (scene_fx_water_reflections): the game tells the height of the water
-// around the camera, so wherever the view ray crosses that plane before
-// reaching the surface in the depth buffer (the water may or may not write
-// depth), it reflects about the plane's normal, rippled, and what it misses
-// reflects the sky. Intensities are applied here: the composite adds as is.
+// Water (scene_fx_water_reflections): the game tells the heights of the water
+// in view (up to 4), and the water writes depth, so a pixel whose surface
+// lies on one of those planes (and is seen from above) is water: it reflects
+// about the plane's normal, rippled, and what it misses reflects the sky.
+// Dry ground below the water's height doesn't. Intensities are applied here:
+// the composite adds as is.
 
 #include "scene_fx_common.hlsli"
 
@@ -31,10 +32,12 @@ FX_EXTRA_CONSTANTS_BLOCK(5) {
   float4 fx_ssr_up;
   // x = max distance, y = step count, z = thickness, w = Fresnel reflectance.
   float4 fx_ssr_params;
-  // x = water level relative to the camera (world units along up), y = water
-  // reflection strength (0 = no water), z = intensity of the other
+  // y = water reflection strength (0 = no water), z = intensity of the other
   // reflections (0 = water only), w = ripple time (seconds).
   float4 fx_ssr_water;
+  // The water levels relative to the camera (world units along up); 0 or
+  // above: none (the camera isn't above it).
+  float4 fx_ssr_water_levels;
   // The world's horizontal axes in view space (xyz) and the camera's
   // position along them (w), for the ripples.
   float4 fx_ssr_water_u;
@@ -80,11 +83,21 @@ void main(uint3 id : SV_DispatchThreadID) {
   float3 normal;
   float reflectance = fx_ssr_params.w;
   float strength = fx_ssr_water.z;
-  if (fx_ssr_water.y > 0.0 && fx_ssr_water.x < 0.0) {
-    float descent = dot(view, up_axis);
-    float crossing = descent < -1.0e-3 ? fx_ssr_water.x / descent : -1.0;
+  float descent = dot(view, up_axis);
+  if (fx_ssr_water.y > 0.0 && descent < -1.0e-3 && !is_sky) {
+    // The plane the surface lies on: its height is within a little of the
+    // level (the drawn water sits a bit off its collision plane).
     float surface = length(position);
-    if (crossing > 0.0 && crossing <= surface * 1.01 + 1.0) {
+    float height = dot(position, up_axis);
+    float tolerance = max(0.01 * surface, 40.0);
+    float crossing = -1.0;
+    [unroll] for (int level = 0; level < 4; ++level) {
+      if (fx_ssr_water_levels[level] < 0.0 &&
+          abs(height - fx_ssr_water_levels[level]) <= tolerance) {
+        crossing = fx_ssr_water_levels[level] / descent;
+      }
+    }
+    if (crossing > 0.0) {
       water = true;
       position = view * crossing;
       // Two small wave trains across the world's horizontal axes.
