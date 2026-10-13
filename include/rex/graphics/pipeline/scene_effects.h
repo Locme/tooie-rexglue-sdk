@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
@@ -103,6 +104,11 @@ class SceneEffects {
     // shared for the horizontal pass).
     kDofBright,
     kDof,
+    // Eye adaptation: each tile's measured brightness this frame (one texel
+    // per tile), and the 1x1 adapted exposure, this frame and the previous.
+    kExposureTiles,
+    kExposure0,
+    kExposure1,
 
     kCount,
   };
@@ -148,6 +154,8 @@ class SceneEffects {
     kSmaaBlend,
     kBloomPrefilter,
     kBloomBlur,
+    kExposureMeasure,
+    kExposureAdapt,
 
     kCount,
   };
@@ -427,6 +435,11 @@ class SceneEffects {
   void ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, uint32_t width,
                          uint32_t height, int32_t screen_offset_x, int32_t screen_offset_y,
                          bool trace);
+  // Eye adaptation: at a frame's first image, adapts the exposure toward the
+  // previous frame's measurements; then measures this tile of `image` (rect
+  // within the 3D's area). Returns the exposure texture the image pass reads,
+  // or kCount if none.
+  Texture UpdateEyeAdaptation(Texture image, const Rect& rect, const Rect& area);
   // SMAA of kFinalImage's rect into kSmaaImage; false if it could not run.
   // The multiply and add composites, or with scene_fx_16bit on an 8-bit
   // (sdr) scene, the resolve.
@@ -549,6 +562,13 @@ class SceneEffects {
   uint32_t scene_color_index_ = 0;
   bool scene_color_valid_[2] = {};
   uint32_t sky_index_ = 0;
+  // Eye adaptation: the exposure's ping-pong index, the frame it was adapted
+  // in, the tiles measured in that frame, and when (for the adaptation rate).
+  uint32_t exposure_index_ = 0;
+  uint64_t exposure_frame_ = UINT64_MAX;
+  uint32_t exposure_tile_count_ = 0;
+  bool exposure_valid_ = false;
+  std::chrono::steady_clock::time_point exposure_time_{};
   uint32_t volumetric_history_index_ = 0;
   bool volumetric_history_valid_ = false;
   uint32_t volumetric_history_scale_ = 0;
