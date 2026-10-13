@@ -531,6 +531,10 @@ class SceneEffects {
   // The last frame with the scene's HDR color resolved, and with the effects.
   uint64_t hdr_frame_ = UINT64_MAX;
   uint64_t effects_frame_ = UINT64_MAX;
+  // The screen rows drawn this frame when the effects run on a tile (its
+  // bottom), 0 for the whole scene: the ambient occlusion doesn't take
+  // occluders from the rows below, only guessed from the previous frame.
+  uint32_t drawn_rows_ = 0;
   uint64_t image_frame_ = UINT64_MAX;
 
   // What was computed for the current frame, and at which resolution.

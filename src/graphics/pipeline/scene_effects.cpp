@@ -957,6 +957,7 @@ void SceneEffects::OnResolve() {
       return;
     }
     if (effects_frame_ != frame) {
+      drawn_rows_ = 0;
       ComputeEffects(*source_rt, rect, screen_offset_x, screen_offset_y, trace);
     }
     if (REXCVAR_GET(scene_fx_gi) || REXCVAR_GET(scene_fx_reflections) ||
@@ -1155,6 +1156,7 @@ void SceneEffects::CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* d
     return;
   }
   hdr_frame_ = frame;
+  drawn_rows_ = uint32_t(std::max(screen_rect.bottom, 0));
   ComputeEffects(color_rt, rect, screen_offset_x, screen_offset_y, trace);
   if (REXCVAR_GET(scene_fx_gi) || REXCVAR_GET(scene_fx_reflections) ||
       WaterReflectionsWanted()) {
@@ -1761,6 +1763,7 @@ void SceneEffects::PrefilterDepth() {
 bool SceneEffects::ComputeAmbientOcclusion(bool global_illumination) {
   FxConstants constants;
   FillConstants(&constants, 0, 0);
+  constants.pass_rect[3] = drawn_rows_;
   uint32_t width = EffectSize(scene_width_, ao_scale_);
   uint32_t height = EffectSize(scene_height_, ao_scale_);
   // The global illumination's light source is the previous frame's scene,
