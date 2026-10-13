@@ -322,6 +322,17 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     ImGui::PopID();
   }
 
+  if (HasCvar("scene_fx_water_reflections") &&
+      EffectHeader("Water Reflections", "scene_fx_water_reflections")) {
+    ImGui::PushID("water");
+    Description(
+        "The scene and the sky mirrored in the water, with gentle ripples - only on water, at "
+        "the water level the game reports around the camera (not the other surfaces, unlike "
+        "Reflections above).");
+    SliderCvar("Strength", "scene_fx_water_reflections_strength", 0.0f, 2.0f);
+    ImGui::PopID();
+  }
+
   if (EffectHeader("Sharpening", "scene_fx_sharpen")) {
     ImGui::PushID("sharpen");
     Description(
@@ -357,23 +368,6 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     ImGui::PopID();
   }
 
-  if (EffectHeader("Cutscene Vignette and Grain", "scene_fx_cinematic")) {
-    ImGui::PushID("cinematic");
-    Description("A subtle vignette and film grain only while the picture is letterboxed.");
-    SliderCvar("Vignette", "scene_fx_cinematic_vignette", 0.0f, 1.0f);
-    SliderCvar("Grain", "scene_fx_cinematic_grain", 0.0f, 1.0f);
-    ImGui::PopID();
-  }
-
-  if (EffectHeader("Cutscene Depth of Field", "scene_fx_dof")) {
-    ImGui::PushID("dof");
-    Description(
-        "While the picture is letterboxed, what is far behind (or well in front of) the "
-        "nearest thing at the screen's center blurs. Before the HUD.");
-    SliderCvar("Strength", "scene_fx_dof_strength", 0.0f, 1.0f);
-    ImGui::PopID();
-  }
-
   if (EffectHeader("Rim Light", "scene_fx_rim")) {
     ImGui::PushID("rim");
     Description("A soft sky-colored glow along silhouettes, as if lit from behind. Before the HUD.");
@@ -385,6 +379,27 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     ImGui::PushID("toon");
     Description("Dark cartoon lines along the silhouettes and creases of the scene, before the HUD.");
     SliderCvar("Darkness", "scene_fx_toon_strength", 0.0f, 1.0f);
+    ImGui::PopID();
+  }
+
+  if (HasCvar("scene_fx_smooth") && EffectHeader("Smooth Triangles", "scene_fx_smooth")) {
+    ImGui::PushID("smooth");
+    Description(
+        "Rounds off the faceted look of low-poly models: each pixel is lit as if the normals "
+        "were smoothed across neighboring triangles, so the creases between flat faces blend "
+        "into curves. Before the HUD.");
+    SliderCvar("Strength", "scene_fx_smooth_strength", 0.0f, 1.0f);
+    ImGui::PopID();
+  }
+
+  if (HasCvar("scene_fx_underwater") && EffectHeader("Underwater Tint", "scene_fx_underwater")) {
+    ImGui::PushID("underwater");
+    Description("A light blue color and haze while the camera is underwater. Before the HUD.");
+    ColorCvar("Color", "scene_fx_underwater_color");
+    SliderCvar("Strength", "scene_fx_underwater_strength", 0.0f, 1.0f);
+    SliderCvar("Haze", "scene_fx_underwater_haze", 0.0f, 0.5f, "%.3f",
+               ImGuiSliderFlags_Logarithmic);
+    CheckboxCvar("Always on (to preview it)", "scene_fx_underwater_force");
     ImGui::PopID();
   }
 
@@ -420,6 +435,24 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     Description("A CRT TV's look: 240 scanlines and an aperture grille.");
     SliderCvar("Scanlines", "scene_fx_retro_crt_scanlines", 0.0f, 1.0f);
     SliderCvar("Grille", "scene_fx_retro_crt_mask", 0.0f, 1.0f);
+    ImGui::PopID();
+  }
+
+  // Cutscene-only effects last (L, 2026-10-12).
+  if (EffectHeader("Cutscene Vignette and Grain", "scene_fx_cinematic")) {
+    ImGui::PushID("cinematic");
+    Description("A subtle vignette and film grain only while the picture is letterboxed.");
+    SliderCvar("Vignette", "scene_fx_cinematic_vignette", 0.0f, 1.0f);
+    SliderCvar("Grain", "scene_fx_cinematic_grain", 0.0f, 1.0f);
+    ImGui::PopID();
+  }
+
+  if (EffectHeader("Cutscene Depth of Field", "scene_fx_dof")) {
+    ImGui::PushID("dof");
+    Description(
+        "While the picture is letterboxed, what is far behind (or well in front of) the "
+        "nearest thing at the screen's center blurs. Before the HUD.");
+    SliderCvar("Strength", "scene_fx_dof_strength", 0.0f, 1.0f);
     ImGui::PopID();
   }
 

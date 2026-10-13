@@ -1,6 +1,7 @@
 set(REXSYSTEM_SOURCES
     runtime.cpp
     scene_camera.cpp
+    scene_hints.cpp
     effect_timings.cpp
     screen_space_draws.cpp
     embedded_metadata.cpp
