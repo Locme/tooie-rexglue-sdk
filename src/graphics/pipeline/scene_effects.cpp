@@ -79,8 +79,9 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_contact_shadows_strength, 0.6, "GPU/Effects",
 
 // Screen-space reflections.
 REXCVAR_DEFINE_BOOL(scene_fx_reflections, false, "GPU/Effects",
-                    "Screen-space reflections (the game doesn't say which surfaces are "
-                    "glossy, so all reflect a little, most at grazing angles)")
+                    "Screen-space reflections (on the game's water only, unless "
+                    "scene_fx_reflections_materials is off: then all surfaces reflect a little, "
+                    "most at grazing angles)")
     REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_INT32(scene_fx_reflections_quality, 2, "GPU/Effects",
                      "Reflection quality: 0 = low, 1 = medium, 2 = high, 3 = ultra")
@@ -98,6 +99,10 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_reflections_thickness, 0.5, "GPU/Effects",
     .range(0.05, 5.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_reflections_floors_only, false, "GPU/Effects",
                     "Reflect only on upward-facing surfaces (floors, wet streets)")
+    REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_reflections_materials, true, "GPU/Effects",
+                    "Reflect only on the surfaces the game says are reflective (its water, "
+                    "rex::system::SetSceneWaterLevels); off: every surface reflects a little")
     REX_SCENE_FX_LIVE;
 
 // Volumetric lighting.
@@ -1766,12 +1771,14 @@ bool SceneEffects::ComputeReflections() {
   rc.params[2] = WorldLength(REXCVAR_GET(scene_fx_reflections_thickness));
   rc.params[3] = float(REXCVAR_GET(scene_fx_reflections_reflectance));
   // The intensities are applied in the shader (water has its own).
-  rc.water[2] =
-      REXCVAR_GET(scene_fx_reflections) ? float(REXCVAR_GET(scene_fx_reflections_intensity)) : 0.0f;
+  // With materials, the reflections are the water's only (L: not everything).
+  const bool materials = REXCVAR_GET(scene_fx_reflections_materials);
+  rc.water[2] = REXCVAR_GET(scene_fx_reflections) && !materials
+                    ? float(REXCVAR_GET(scene_fx_reflections_intensity))
+                    : 0.0f;
   float water_levels[rex::system::kMaxSceneWaterLevels];
-  int water_level_count = REXCVAR_GET(scene_fx_water_reflections)
-                              ? rex::system::GetSceneWaterLevels(water_levels)
-                              : 0;
+  int water_level_count =
+      WaterReflectionsWanted() ? rex::system::GetSceneWaterLevels(water_levels) : 0;
   // Not from below the water (really: the underwater tint's "always on" preview
   // must not turn the water reflections off).
   if (water_level_count && !rex::system::GetSceneUnderwater()) {
@@ -1781,7 +1788,11 @@ bool SceneEffects::ComputeReflections() {
       rc.water_levels[i] =
           i < water_level_count ? water_levels[i] * basis.up_sign - height[3] : 1.0f;
     }
-    rc.water[1] = float(REXCVAR_GET(scene_fx_water_reflections_strength));
+    // The water's own strength, else the reflections' (its default 1 is the
+    // water's default 1.5).
+    rc.water[1] = REXCVAR_GET(scene_fx_water_reflections)
+                      ? float(REXCVAR_GET(scene_fx_water_reflections_strength))
+                      : 1.5f * float(REXCVAR_GET(scene_fx_reflections_intensity));
     static const auto kStart = std::chrono::steady_clock::now();
     rc.water[3] = float(
         std::fmod(std::chrono::duration<double>(std::chrono::steady_clock::now() - kStart).count(),
@@ -2096,7 +2107,9 @@ bool SceneEffects::Underwater() {
 
 bool SceneEffects::WaterReflectionsWanted() {
   float levels[rex::system::kMaxSceneWaterLevels];
-  return REXCVAR_GET(scene_fx_water_reflections) && rex::system::GetSceneWaterLevels(levels) > 0;
+  return (REXCVAR_GET(scene_fx_water_reflections) ||
+          (REXCVAR_GET(scene_fx_reflections) && REXCVAR_GET(scene_fx_reflections_materials))) &&
+         rex::system::GetSceneWaterLevels(levels) > 0;
 }
 
 bool SceneEffects::IsLetterboxed(uint32_t screen_height) const {
