@@ -239,6 +239,10 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_grading_temperature, 0.0, "GPU/Effects",
 REXCVAR_DEFINE_DOUBLE(scene_fx_grading_tint, 0.0, "GPU/Effects",
                       "White balance: negative greener, positive more magenta")
     .range(-1.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_INT32(scene_fx_brightness, 100, "GPU/Effects",
+                     "Display brightness in percent (a gamma for your screen, apart from color "
+                     "grading): above 100 brightens the darks and midtones")
+    .range(50, 200) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_grading_gamma, 1.0, "GPU/Effects",
                       "Gamma: above 1 brightens the midtones")
     .range(0.5, 2.0) REX_SCENE_FX_LIVE;
@@ -528,7 +532,7 @@ bool SceneEffects::AnyImageEffectEnabled() {
   return REXCVAR_GET(scene_fx_sharpen) || REXCVAR_GET(scene_fx_grading) ||
          REXCVAR_GET(scene_fx_smaa) || REXCVAR_GET(scene_fx_retro_16bit_color) ||
          REXCVAR_GET(scene_fx_retro_crt) || REXCVAR_GET(scene_fx_colorblind) > 0 ||
-         REXCVAR_GET(scene_fx_cinematic);
+         REXCVAR_GET(scene_fx_cinematic) || REXCVAR_GET(scene_fx_brightness) != 100;
 }
 
 bool SceneEffects::SunShadowsNeeded() {
@@ -2135,7 +2139,9 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
   }
   bool letterboxed = IsLetterboxed(height);
   bool cinematic = REXCVAR_GET(scene_fx_cinematic) && letterboxed;
-  if (!sharpen && !grading && !smaa && !retro_color && !crt && colorblind <= 0 && !cinematic) {
+  float brightness = float(REXCVAR_GET(scene_fx_brightness)) * 0.01f;
+  if (!sharpen && !grading && !smaa && !retro_color && !crt && colorblind <= 0 && !cinematic &&
+      brightness == 1.0f) {
     return;
   }
   TimingScope timing(*this, TimedSection::kImage);
@@ -2181,6 +2187,7 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
     ic.finish[1] = float(REXCVAR_GET(scene_fx_vignette));
     ic.finish[2] = float(REXCVAR_GET(scene_fx_film_grain));
   }
+  ic.white[3] /= std::max(brightness, 0.1f);
   ic.finish[3] = REXCVAR_GET(scene_fx_16bit) ? 1.0f : 0.0f;
   ic.retro[0] = retro_color ? 1.0f : 0.0f;
   ic.retro[1] = crt ? float(REXCVAR_GET(scene_fx_retro_crt_scanlines)) : 0.0f;
