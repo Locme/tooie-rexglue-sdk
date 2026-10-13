@@ -1,7 +1,10 @@
 // Estimates the sky's HDR color from the guest's own rendering of it (the
 // pixels at the far plane within fx_pass_rect of an HDR render target), so the
 // volumetric lighting matches the game's time of day, weather and exposure.
-// Smoothed over frames; kept as is when no sky is visible. One 16x16 group.
+// Smoothed over frames; kept as is when no sky is visible. Until any sky has
+// been seen (a level entered indoors), the scene's average color instead
+// (a = 0.5), so the fog has some light to scatter: black otherwise, and its
+// brightness and sun glow did nothing. One 16x16 group.
 
 #include "scene_fx_common.hlsli"
 
@@ -15,33 +18,39 @@ FX_BINDING(2) Texture2D<float4> fx_previous_sky : register(t2);   // 1x1, a = va
 FX_BINDING(3) FX_FORMAT_RGBA16F RWTexture2D<float4> fx_sky : register(u0);          // 1x1
 
 groupshared float4 fx_sky_sums[256];
+groupshared float4 fx_scene_sums[256];
 
 [numthreads(16, 16, 1)]
 void main(uint3 local : SV_GroupThreadID, uint index : SV_GroupIndex) {
   // A 32x32 grid of samples over the rectangle, 4 per thread.
   float4 sum = 0.0;
+  float4 scene_sum = 0.0;
   float2 rect_size = float2(fx_pass_rect.zw - fx_pass_rect.xy);
   [unroll] for (uint i = 0; i < 4; ++i) {
     float2 grid = float2(local.xy * 2 + uint2(i & 1, i >> 1)) + 0.5;
     int2 pixel = int2(fx_pass_rect.xy) + int2(grid / 32.0 * rect_size);
     int2 screen = clamp(pixel + fx_screen_offset, int2(0, 0), int2(fx_scene_size) - 1);
-    if (fx_depth.Load(int3(screen, 0)) >= fx_sky_distance) {
 #ifdef FX_MSAA
-      float3 color = fx_color.Load(pixel, 0).rgb;
+    float3 color = fx_color.Load(pixel, 0).rgb;
 #else
-      float3 color = fx_color.Load(int3(pixel, 0)).rgb;
+    float3 color = fx_color.Load(int3(pixel, 0)).rgb;
 #endif
-      // Ignore NaN / infinity from the guest's float formats.
-      if (all(color == color) && all(color < 65504.0)) {
-        sum += float4(max(color, 0.0), 1.0);
+    // Ignore NaN / infinity from the guest's float formats.
+    if (all(color == color) && all(color < 65504.0)) {
+      float4 sample_value = float4(max(color, 0.0), 1.0);
+      scene_sum += sample_value;
+      if (fx_depth.Load(int3(screen, 0)) >= fx_sky_distance) {
+        sum += sample_value;
       }
     }
   }
   fx_sky_sums[index] = sum;
+  fx_scene_sums[index] = scene_sum;
   GroupMemoryBarrierWithGroupSync();
   [unroll] for (uint stride = 128; stride > 0; stride >>= 1) {
     if (index < stride) {
       fx_sky_sums[index] += fx_sky_sums[index + stride];
+      fx_scene_sums[index] += fx_scene_sums[index + stride];
     }
     GroupMemoryBarrierWithGroupSync();
   }
@@ -53,6 +62,9 @@ void main(uint3 local : SV_GroupThreadID, uint index : SV_GroupIndex) {
     if (total.w >= 40.0) {
       float3 average = total.rgb / total.w;
       sky = float4(previous.a > 0.0 ? lerp(previous.rgb, average, 0.08) : average, 1.0);
+    } else if (previous.a < 1.0 && fx_scene_sums[0].w > 0.0) {
+      float3 average = fx_scene_sums[0].rgb / fx_scene_sums[0].w;
+      sky = float4(previous.a > 0.0 ? lerp(previous.rgb, average, 0.08) : average, 0.5);
     }
     fx_sky[uint2(0, 0)] = sky;
   }

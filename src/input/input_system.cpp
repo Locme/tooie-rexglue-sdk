@@ -269,6 +269,37 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
   return X_ERROR_SUCCESS;
 }
 
+X_RESULT InputSystem::GetMotion(uint32_t user_index, float out_degrees[3]) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  SCOPE_profile_cpu_f("hid");
+  out_degrees[0] = out_degrees[1] = out_degrees[2] = 0.0f;
+  if (!assignment_) {
+    return X_ERROR_DEVICE_NOT_CONNECTED;
+  }
+
+  RefreshDevices();
+  std::vector<DeviceId> ids;
+  assignment_->DevicesForUser(user_index, ids);
+
+  // Every pad is read so none saves up a turn for later.
+  bool any = false;
+  for (DeviceId id : ids) {
+    auto* driver = DriverForDevice(id);
+    if (!driver) {
+      continue;
+    }
+    float degrees[3] = {};
+    if (driver->GetDeviceMotion(id, degrees) != X_ERROR_SUCCESS) {
+      continue;
+    }
+    any = true;
+    for (int i = 0; i < 3; i++) {
+      out_degrees[i] += degrees[i];
+    }
+  }
+  return any ? X_ERROR_SUCCESS : X_ERROR_DEVICE_NOT_CONNECTED;
+}
+
 X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   SCOPE_profile_cpu_f("hid");
