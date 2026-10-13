@@ -279,8 +279,9 @@ REXCVAR_DEFINE_INT32(scene_fx_debug, 0, "GPU/Effects",
                      "Effects debug view: 0 = off, 1 = effects on the left half of the screen "
                      "only, 2 = ambient occlusion, 3 = volumetric lighting, 4 = global "
                      "illumination, 5 = fog, 6 = contact shadows, 7 = reflections, 8 = depth "
-                     "(white near, black far, blue sky)")
-    .range(0, 8) REX_SCENE_FX_LIVE;
+                     "(white near, black far, blue sky), 9 = materials (texture_materials: "
+                     "blue water, cyan ice, yellow metal, green glass, magenta polished)")
+    .range(0, 9) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_trace, false, "GPU/Effects",
                     "Log the effects' decisions for one frame, then reset") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_sprite_depth_write, false, "GPU/Effects",
@@ -357,6 +358,9 @@ struct ReflectionConstants {
   float reproject[4][4];
   float up[4];
   float params[4];
+  // x = 1 for only the tagged materials to reflect, y = 1 to show the
+  // materials (scene_fx_debug 9).
+  float materials[4];
 };
 
 struct ImageConstants {
@@ -383,6 +387,7 @@ constexpr uint32_t kEffectOutlines = 128;
 constexpr uint32_t kEffectDof = 256;
 constexpr uint32_t kEffectRim = 512;
 constexpr int32_t kDebugSplit = 1;
+constexpr int32_t kDebugMaterials = 9;
 constexpr uint32_t kCompositeMultiply = 0;
 constexpr uint32_t kCompositeAdd = 1;
 constexpr uint32_t kCompositeDebug = 2;
@@ -459,6 +464,7 @@ const SceneEffects::TextureInfo
         {TextureFormat::kRGBA16Float, 1, false},                // kBloom
         {TextureFormat::kRGBA16Float, 1, false},                // kDofBright
         {TextureFormat::kRGBA16Float, 1, false},                // kDof
+        {TextureFormat::kR16Float, 1, true},                    // kMaterial
 };
 
 const SceneEffects::PipelineInfo
@@ -478,7 +484,7 @@ const SceneEffects::PipelineInfo
         {1, false, false, 1},  // kColorCopy
         {1, false, false, 1},  // kColorCopyMsaa
         {4, true, true, 1},    // kContactShadows
-        {3, true, true, 1},    // kReflections
+        {5, true, true, 1},    // kReflections
         {4, true, true, 1},    // kVolumetric
         {3, true, true, 1},    // kTemporal
         {0, false, true, 2},   // kSmaaTables
@@ -487,6 +493,8 @@ const SceneEffects::PipelineInfo
         {2, true, false, 1},   // kSmaaBlend
         {1, false, true, 1},   // kBloomPrefilter
         {1, false, true, 1},   // kBloomBlur
+        {1, false, false, 1},  // kMaterialCopy
+        {1, false, false, 1},  // kMaterialCopyMsaa
 };
 
 SceneEffects::SceneEffects(RenderTargetCache& render_target_cache,
@@ -526,6 +534,46 @@ bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
   // triangles at a time), but through a shader that also draws bigger ones.
   auto it = vertex_shader_max_indices_.find(vertex_shader_hash);
   return it != vertex_shader_max_indices_.end() && it->second <= 6;
+}
+
+bool SceneEffects::MaterialTaggingActive(bool have_materials) {
+  material_tagging_ = have_materials &&
+                      (REXCVAR_GET(scene_fx_reflections) ||
+                       REXCVAR_GET(scene_fx_debug) == kDebugMaterials) &&
+                      AnySceneEffectEnabled();
+  return material_tagging_;
+}
+
+bool SceneEffects::TagMaterial(uint8_t material, reg::RB_DEPTHCONTROL& depth_control,
+                               reg::RB_STENCILREFMASK& front, reg::RB_STENCILREFMASK& back) {
+  if (!depth_control.z_enable && !depth_control.stencil_enable) {
+    // No depth buffer bound for it, possibly the 2D overlays: binding one
+    // could overlap color in the EDRAM.
+    return false;
+  }
+  if (depth_control.stencil_enable) {
+    // The guest's own: one bit.
+    for (reg::RB_STENCILREFMASK* face : {&front, &back}) {
+      face->stencilref = face->stencilref ? 1 : 0;
+      face->stencilmask = face->stencilmask ? 1 : 0;
+      face->stencilwritemask = face->stencilwritemask ? 1 : 0;
+    }
+    return true;
+  }
+  if (!depth_control.z_write_enable && !material) {
+    return false;
+  }
+  depth_control.stencil_enable = 1;
+  depth_control.backface_enable = 0;
+  depth_control.stencilfunc = xenos::CompareFunction::kAlways;
+  depth_control.stencilfail = xenos::StencilOp::kKeep;
+  depth_control.stencilzfail = xenos::StencilOp::kKeep;
+  depth_control.stencilzpass = xenos::StencilOp::kReplace;
+  front.stencilref = uint32_t(material) << 1;
+  front.stencilmask = 0;
+  front.stencilwritemask = 0xFE;
+  back = front;
+  return true;
 }
 
 bool SceneEffects::AnyImageEffectEnabled() {
@@ -1187,6 +1235,11 @@ void SceneEffects::CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* sc
                &constants, &dc, sizeof(dc), width, height)) {
     depth_frame_ = frame;
   }
+  materials_valid_ =
+      material_tagging_ &&
+      Dispatch(msaa ? Pipeline::kMaterialCopyMsaa : Pipeline::kMaterialCopy,
+               {Source::Stencil(&depth_rt)}, {Target(Texture::kMaterial)}, &constants, nullptr, 0,
+               width, height);
 }
 
 void SceneEffects::CaptureCamera(const float rows[4][4]) {
@@ -1558,7 +1611,9 @@ void SceneEffects::ComputeEffects(RenderTarget& color_rt, const Rect& rect,
   bool volumetrics = REXCVAR_GET(scene_fx_volumetrics);
 
   PrefilterDepth();
-  if (volumetrics || fog || gi) {
+  // The reflections of tagged materials show the sky where nothing on the
+  // screen is in the way.
+  if (volumetrics || fog || gi || (materials_valid_ && REXCVAR_GET(scene_fx_reflections))) {
     // Only where the 3D was drawn: letterbox bars have the sky's depth too.
     Rect sky_rect = rect;
     if (ClipToSceneDraws(sky_rect)) {
@@ -1578,7 +1633,9 @@ void SceneEffects::ComputeEffects(RenderTarget& color_rt, const Rect& rect,
   }
   {
     TimingScope timing(*this, TimedSection::kReflections);
-    reflections_computed_ = REXCVAR_GET(scene_fx_reflections) && ComputeReflections();
+    reflections_computed_ = (REXCVAR_GET(scene_fx_reflections) ||
+                             REXCVAR_GET(scene_fx_debug) == kDebugMaterials) &&
+                            ComputeReflections();
   }
   {
     TimingScope timing(*this, TimedSection::kVolumetrics);
@@ -1682,12 +1739,15 @@ bool SceneEffects::ComputeReflections() {
       float(QualityEntry(kReflectionStepCounts, REXCVAR_GET(scene_fx_reflections_quality)));
   rc.params[2] = WorldLength(REXCVAR_GET(scene_fx_reflections_thickness));
   rc.params[3] = float(REXCVAR_GET(scene_fx_reflections_reflectance));
+  rc.materials[0] = materials_valid_ ? 1.0f : 0.0f;
+  rc.materials[1] = REXCVAR_GET(scene_fx_debug) == kDebugMaterials ? 1.0f : 0.0f;
   FxConstants constants;
   FillConstants(&constants, 0, 0);
   constants.effect_scale = ao_scale_;
   Texture previous_color = scene_color_index_ ? Texture::kSceneColor0 : Texture::kSceneColor1;
   if (!Dispatch(Pipeline::kReflections,
-                {Source(Texture::kViewDepth), Source(DepthTexture()), Source(previous_color)},
+                {Source(Texture::kViewDepth), Source(DepthTexture()), Source(previous_color),
+                 Source(Texture::kMaterial), Source(sky_index_ ? Texture::kSky1 : Texture::kSky0)},
                 {Target(Texture::kReflections0)}, &constants, &rc, sizeof(rc),
                 EffectSize(scene_width_, ao_scale_), EffectSize(scene_height_, ao_scale_))) {
     return false;

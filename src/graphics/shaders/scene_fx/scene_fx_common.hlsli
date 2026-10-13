@@ -45,6 +45,7 @@
 #define FX_DEBUG_CONTACT_SHADOWS 6u
 #define FX_DEBUG_REFLECTIONS 7u
 #define FX_DEBUG_DEPTH 8u
+#define FX_DEBUG_MATERIALS 9u
 
 // fx_composite_mode.
 #define FX_COMPOSITE_MULTIPLY 0u  // dest * (occlusion + indirect) * fog transmittance

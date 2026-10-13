@@ -114,6 +114,23 @@ class TextureCache {
 
   virtual void RequestTextures(uint32_t used_texture_mask);
 
+  // texture_materials: what a surface drawn with a texture is made of, for the
+  // scene effects (the material tagging in the stencil buffer).
+  enum class Material : uint8_t {
+    kUnknown,
+    kWater,
+    kIce,
+    kMetal,
+    kGlass,
+    kPolished,
+    kCount,
+  };
+  static const char* GetMaterialName(Material material);
+  bool HasMaterials();
+  // The material of the textures the fetch constants bound now refer to (the
+  // first known one), among the textures already created: 0 when unknown.
+  uint8_t FindMaterial(uint32_t fetch_constant_mask);
+
   // "ActiveTexture" means as of the latest RequestTextures call.
 
   uint32_t GetActiveTextureHostSwizzle(uint32_t fetch_constant_index) const {
@@ -224,6 +241,9 @@ class TextureCache {
     // The fetch constant swizzle the texture was first bound with (8_8_8_8
     // dumps and replacement files are in that channel order).
     uint32_t file_swizzle() const { return file_swizzle_; }
+    // texture_materials: the surface material of what's drawn with this
+    // texture (Material, 0 = unknown).
+    uint8_t material() const { return material_; }
 
     uint64_t last_usage_submission_index() const { return last_usage_submission_index_; }
     uint64_t last_usage_time() const { return last_usage_time_; }
@@ -267,6 +287,7 @@ class TextureCache {
 
     std::shared_ptr<const texture_files::Replacement> replacement_;
     uint32_t file_swizzle_;
+    uint8_t material_;
 
     uint64_t host_memory_usage_ = 0;
 
@@ -621,6 +642,14 @@ class TextureCache {
   std::string creating_replacement_stem_;
   // The fetch constant swizzle of the binding a texture is being created for.
   uint32_t creating_swizzle_ = texture_files::kIdentitySwizzle;
+  // texture_materials: material by guest data hash, from the files named by
+  // the cvar (loaded again when it changes).
+  void LoadMaterialsIfNeeded();
+  uint8_t LookUpMaterial(const TextureKey& key, uint64_t known_hash);
+  std::unordered_map<uint64_t, uint8_t> materials_;
+  std::string materials_source_;
+  bool materials_loaded_ = false;
+  uint8_t creating_material_ = 0;
   uint32_t draw_resolution_scale_x_;
   uint32_t draw_resolution_scale_y_;
 

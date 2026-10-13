@@ -5,7 +5,10 @@
 // before the effects, reprojected - the guest renders the screen in tiles, so
 // this frame's isn't complete yet - weighted by Fresnel (surfaces reflect most
 // at grazing angles). Fades out toward the screen's edges and with distance,
-// where nothing is known. Output: rgb = reflected light, a = confidence.
+// where nothing is known. With the materials tagged (texture_materials), only
+// those reflect, each as much as it should (water and ice a lot, stone not at
+// all); without, every surface a little. Output: rgb = reflected light, a =
+// confidence.
 
 #include "scene_fx_common.hlsli"
 
@@ -15,16 +18,40 @@ FX_BINDING(0) Texture2D<float> fx_view_depth : register(t0);
 FX_BINDING(1) Texture2D<float> fx_depth : register(t1);
 // Half resolution, the guest's scene before the effects, previous frame.
 FX_BINDING(2) Texture2D<float4> fx_previous_color : register(t2);
-FX_BINDING(3) SamplerState fx_clamp : register(s0);
-FX_EXTRA_CONSTANTS_BLOCK(4) {
+// Full resolution, TextureCache::Material (0 = unknown).
+FX_BINDING(3) Texture2D<float> fx_material : register(t3);
+// 1x1, the sky's color.
+FX_BINDING(4) Texture2D<float4> fx_sky : register(t4);
+FX_BINDING(5) SamplerState fx_clamp : register(s0);
+FX_EXTRA_CONSTANTS_BLOCK(6) {
   // View space position this frame to the previous frame's clip space.
   float4 fx_ssr_reproject[4];
   // xyz = world up in view space, w = 1 to reflect only on floors.
   float4 fx_ssr_up;
   // x = max distance, y = step count, z = thickness, w = Fresnel reflectance.
   float4 fx_ssr_params;
+  // x = 1 for only the tagged materials to reflect, y = 1 to show the
+  // materials instead.
+  float4 fx_ssr_materials;
 };
-FX_BINDING(5) FX_FORMAT_RGBA16F RWTexture2D<float4> fx_reflections : register(u0);
+FX_BINDING(7) FX_FORMAT_RGBA16F RWTexture2D<float4> fx_reflections : register(u0);
+
+// Per TextureCache::Material: x = reflectance facing it (Fresnel F0), y =
+// strength; and its color in the debug view.
+static const float2 kFxMaterialReflection[6] = {
+    float2(0.0, 0.0),    // unknown
+    // Far more than real water's 0.02: added over the game's own color (the
+    // composite only adds light), a real-world amount barely shows.
+    float2(0.35, 1.0),   // water
+    float2(0.25, 1.0),   // ice
+    float2(0.6, 0.8),    // metal
+    float2(0.2, 1.0),    // glass
+    float2(0.1, 0.8),    // polished
+};
+static const float3 kFxMaterialColor[6] = {
+    float3(0.0, 0.0, 0.0), float3(0.1, 0.3, 1.0), float3(0.4, 1.0, 1.0),
+    float3(1.0, 0.8, 0.1), float3(0.2, 1.0, 0.3), float3(1.0, 0.2, 1.0),
+};
 
 float FxEffectDistance(int2 texel) {
   texel = clamp(texel, int2(0, 0), FxEffectSize(fx_effect_scale) - 1);
@@ -54,6 +81,22 @@ void main(uint3 id : SV_DispatchThreadID) {
     return;
   }
   int2 texel = int2(id.xy);
+  float reflectance = fx_ssr_params.w;
+  float strength = 1.0;
+  if (fx_ssr_materials.x > 0.0) {
+    int2 pixel = min(int2(FxEffectScreen(texel, fx_effect_scale)), int2(fx_scene_size) - 1);
+    uint material = min(uint(fx_material.Load(int3(pixel, 0)) + 0.5), 5u);
+    if (fx_ssr_materials.y > 0.0) {
+      fx_reflections[texel] = float4(kFxMaterialColor[material], 1.0);
+      return;
+    }
+    reflectance = kFxMaterialReflection[material].x;
+    strength = kFxMaterialReflection[material].y;
+    if (strength <= 0.0) {
+      fx_reflections[texel] = 0.0;
+      return;
+    }
+  }
   float3 position = FxEffectPosition(texel);
   if (position.z >= fx_sky_distance) {
     fx_reflections[texel] = 0.0;
@@ -76,8 +119,8 @@ void main(uint3 id : SV_DispatchThreadID) {
   }
   float3 direction = reflect(view, normal);
   // Schlick's Fresnel.
-  float fresnel = fx_ssr_params.w +
-                  (1.0 - fx_ssr_params.w) * pow(1.0 - saturate(dot(-view, normal)), 5.0);
+  float fresnel = strength * (reflectance + (1.0 - reflectance) *
+                                             pow(1.0 - saturate(dot(-view, normal)), 5.0));
   // Toward the camera: whatever it would hit is mostly off screen.
   if (direction.z < -0.2 || fresnel < 0.01) {
     fx_reflections[texel] = 0.0;
@@ -121,7 +164,12 @@ void main(uint3 id : SV_DispatchThreadID) {
     previous_t = t;
   }
   if (hit_t < 0.0) {
-    fx_reflections[texel] = 0.0;
+    // Nothing on the screen: a tagged surface (water, ice) facing up sees the
+    // sky, faded in from the horizon.
+    float sky_view = fx_ssr_materials.x > 0.0 ? saturate(dot(direction, fx_ssr_up.xyz) * 4.0)
+                                              : 0.0;
+    float3 sky = fx_sky.Load(int3(0, 0, 0)).rgb;
+    fx_reflections[texel] = float4(sky * (fresnel * sky_view), sky_view);
     return;
   }
 

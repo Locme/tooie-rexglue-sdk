@@ -63,6 +63,8 @@ VARIANTS = (
     ("scene_fx_smaa_blend_cs", "scene_fx_smaa_cs.hlsl", "cs", ("FX_SMAA_BLEND",)),
     ("scene_fx_bloom_prefilter_cs", "scene_fx_bloom_cs.hlsl", "cs", ("FX_BLOOM_PREFILTER",)),
     ("scene_fx_bloom_blur_cs", "scene_fx_bloom_cs.hlsl", "cs", ()),
+    ("scene_fx_material_copy_cs", "scene_fx_material_copy_cs.hlsl", "cs", ()),
+    ("scene_fx_material_copy_msaa_cs", "scene_fx_material_copy_cs.hlsl", "cs", ("FX_MSAA",)),
     ("scene_fx_fullscreen_vs", "scene_fx_fullscreen_vs.hlsl", "vs", ()),
     ("scene_fx_composite_ps", "scene_fx_composite_ps.hlsl", "ps", ()),
     ("scene_fx_image_ps", "scene_fx_image_ps.hlsl", "ps", ()),

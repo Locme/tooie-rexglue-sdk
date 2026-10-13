@@ -325,6 +325,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (fx_debug_mode == FX_DEBUG_REFLECTIONS) {
     return float4(reflections / (1.0 + reflections), 1.0);
   }
+  if (fx_debug_mode == FX_DEBUG_MATERIALS) {
+    // The reflections' colors per material, at their strength.
+    return float4(reflections / max(fx_effect_strengths.y * fog_transmittance, 1.0e-3), 1.0);
+  }
   if (fx_debug_mode == FX_DEBUG_DEPTH) {
     // The view distance the effects decoded, on a log scale from 1 (white)
     // to the sky distance (black); sky (and beyond) blue.

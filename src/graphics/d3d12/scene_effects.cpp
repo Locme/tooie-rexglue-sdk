@@ -47,6 +47,8 @@ namespace shaders {
 #include "../shaders/bytecode/d3d12_5_1/scene_fx_smaa_weights_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/scene_fx_bloom_prefilter_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/scene_fx_bloom_blur_cs.h"
+#include "../shaders/bytecode/d3d12_5_1/scene_fx_material_copy_cs.h"
+#include "../shaders/bytecode/d3d12_5_1/scene_fx_material_copy_msaa_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/scene_fx_temporal_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/scene_fx_volumetric_cs.h"
 }  // namespace shaders
@@ -90,6 +92,8 @@ const ShaderCode kComputeShaders[] = {
     REX_SCENE_FX_SHADER(scene_fx_smaa_blend_cs),
     REX_SCENE_FX_SHADER(scene_fx_bloom_prefilter_cs),
     REX_SCENE_FX_SHADER(scene_fx_bloom_blur_cs),
+    REX_SCENE_FX_SHADER(scene_fx_material_copy_cs),
+    REX_SCENE_FX_SHADER(scene_fx_material_copy_msaa_cs),
 };
 #undef REX_SCENE_FX_SHADER
 
@@ -379,9 +383,12 @@ void D3D12SceneEffects::WriteSourceView(D3D12_CPU_DESCRIPTOR_HANDLE handle, cons
     auto& d3d12_rt = static_cast<D3D12RenderTargetCache::D3D12RenderTarget&>(*source.render_target);
     TransitionRenderTarget(*source.render_target, read_state);
     if (d3d12_rt.key().is_depth) {
-      // The cache's own view of the depth.
-      device->CopyDescriptorsSimple(1, handle, d3d12_rt.descriptor_srv().GetHandle(),
-                                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+      // The cache's own view of the depth or the stencil.
+      device->CopyDescriptorsSimple(
+          1, handle,
+          (source.stencil ? d3d12_rt.descriptor_srv_stencil() : d3d12_rt.descriptor_srv())
+              .GetHandle(),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
       return;
     }
     // The cache's color view is for bit-exact transfers - read it as floats.

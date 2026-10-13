@@ -50,6 +50,47 @@ class SceneEffects {
   // told by its vertex shader never drawing more than one quad, while
   // scene_fx_sprite_depth_write is off and a scene effect is on.
   bool SuppressSpriteDepthWrite(uint64_t vertex_shader_hash);
+  // Material tagging for the reflections (texture_materials): whether to tag
+  // the draws now, given whether the texture cache knows any materials.
+  bool MaterialTaggingActive(bool have_materials);
+  // While tagging, the draw being issued (with the material of its textures,
+  // 0 = unknown) keeps the material in the stencil buffer's upper 7 bits for
+  // where it ends up drawn: a depth-writing draw or one of a known material
+  // writes it; the guest's own stencil use is moved to bit 0 (Banjo-Tooie
+  // uses it as one bit for its blob shadows). Changes the depth control and
+  // the stencil reference and masks; false if the draw is left as is.
+  static bool TagMaterial(uint8_t material, reg::RB_DEPTHCONTROL& depth_control,
+                          reg::RB_STENCILREFMASK& front, reg::RB_STENCILREFMASK& back);
+  // Puts TagMaterial's stencil reference and masks in the register file for
+  // one draw (the backends read them from there), back as they were when
+  // destroyed.
+  class StencilRefMaskOverride {
+   public:
+    explicit StencilRefMaskOverride(RegisterFile& register_file) : register_file_(register_file) {}
+    ~StencilRefMaskOverride() {
+      if (set_) {
+        register_file_.values[XE_GPU_REG_RB_STENCILREFMASK] = saved_front_;
+        register_file_.values[XE_GPU_REG_RB_STENCILREFMASK_BF] = saved_back_;
+      }
+    }
+    StencilRefMaskOverride(const StencilRefMaskOverride&) = delete;
+    StencilRefMaskOverride& operator=(const StencilRefMaskOverride&) = delete;
+    void Set(reg::RB_STENCILREFMASK front, reg::RB_STENCILREFMASK back) {
+      if (!set_) {
+        saved_front_ = register_file_.values[XE_GPU_REG_RB_STENCILREFMASK];
+        saved_back_ = register_file_.values[XE_GPU_REG_RB_STENCILREFMASK_BF];
+        set_ = true;
+      }
+      register_file_.values[XE_GPU_REG_RB_STENCILREFMASK] = front.value;
+      register_file_.values[XE_GPU_REG_RB_STENCILREFMASK_BF] = back.value;
+    }
+
+   private:
+    RegisterFile& register_file_;
+    uint32_t saved_front_ = 0;
+    uint32_t saved_back_ = 0;
+    bool set_ = false;
+  };
 
  protected:
   using RenderTarget = RenderTargetCache::RenderTarget;
@@ -103,6 +144,9 @@ class SceneEffects {
     // shared for the horizontal pass).
     kDofBright,
     kDof,
+    // Full resolution: the material tagged in the stencil (TagMaterial) of
+    // what's drawn at each pixel, TextureCache::Material (0 = unknown).
+    kMaterial,
 
     kCount,
   };
@@ -148,6 +192,8 @@ class SceneEffects {
     kSmaaBlend,
     kBloomPrefilter,
     kBloomBlur,
+    kMaterialCopy,
+    kMaterialCopyMsaa,
 
     kCount,
   };
@@ -183,10 +229,17 @@ class SceneEffects {
   struct Source {
     Texture texture = Texture::kCount;
     RenderTarget* render_target = nullptr;
+    // A depth render target's stencil (as unsigned integers) instead.
+    bool stencil = false;
 
     Source() = default;
     Source(Texture texture) : texture(texture) {}
     Source(RenderTarget* render_target) : render_target(render_target) {}
+    static Source Stencil(RenderTarget* render_target) {
+      Source source(render_target);
+      source.stencil = true;
+      return source;
+    }
   };
   struct Target {
     Texture texture;
@@ -520,6 +573,10 @@ class SceneEffects {
   bool sdr_scene_drawn_ = false;
   // Of the depth-writing draws since the last resolve.
   DrawState draw_states_[kMaxDrawStates] = {};
+  // MaterialTaggingActive's latest answer, and whether kMaterial holds this
+  // frame's tagged materials.
+  bool material_tagging_ = false;
+  bool materials_valid_ = false;
   uint32_t draw_state_count_ = 0;
   // Union of the scissors of the pass's depth-writing draws (render target
   // pixels): the 3D's area, without letterbox bars and the like drawn around
