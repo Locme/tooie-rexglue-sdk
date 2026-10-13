@@ -831,7 +831,8 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
   }
   // N64 3-point filtering (pixel shaders, linear-filtered 2D textures): the
   // texel size places the three samples.
-  const bool three_point = is_pixel_shader() && GetDxbcShaderModification().pixel.three_point_filter &&
+  const bool three_point = is_pixel_shader() &&
+                           GetDxbcShaderModification().pixel.three_point_filter &&
                            instr.opcode == FetchOpcode::kTextureFetch &&
                            instr.dimension == xenos::FetchOpDimension::k2D &&
                            instr.attributes.mag_filter != xenos::TextureFilter::kPoint;
