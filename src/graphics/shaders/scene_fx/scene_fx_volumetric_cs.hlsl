@@ -6,6 +6,10 @@
 // smooth shaft edges, and the per-pixel jitter changes every frame for the
 // temporal accumulation. The light is relative to the guest's sky, following
 // its time of day, weather and exposure.
+// Without shadow cascades (Banjo-Tooie has none) the depth buffer decides
+// instead: a point is in shadow where a short march toward the sun goes
+// behind something on the screen (a roof, a wall, the trees), so shafts form
+// through the gaps between what's drawn.
 // Output: rgb = scattered sunlight reaching the camera.
 
 #include "scene_fx_sun.hlsli"
@@ -18,6 +22,31 @@ FX_BINDING(3) Texture2D<float4> fx_sky : register(t3);  // 1x1
 FX_BINDING(4) SamplerState fx_clamp : register(s0);
 FX_SUN_CONSTANTS(5)
 FX_BINDING(6) FX_FORMAT_RGBA16F RWTexture2D<float4> fx_volumetric : register(u0);
+
+// Fraction of the sun reaching a view space position past what's on the
+// screen: 0 where a march toward the sun goes behind a surface (within
+// `thickness` of it), 1 off the screen or into the sky.
+float FxScreenSunVisibility(float3 position, float length, float thickness, float jitter) {
+  const uint kSteps = 6u;
+  [loop] for (uint i = 0; i < kSteps; ++i) {
+    float t = (float(i) + jitter) / float(kSteps);
+    float3 p = position + fx_sun_direction.xyz * (length * t * t);
+    if (p.z <= 0.05) {
+      return 1.0;
+    }
+    float2 ndc = p.xy / (p.z * float2(fx_inv_p00, fx_inv_p11));
+    float2 screen = (ndc * float2(0.5, -0.5) + 0.5) * float2(fx_scene_size);
+    if (any(screen < 0.0) || any(screen >= float2(fx_scene_size))) {
+      return 1.0;
+    }
+    int2 texel = min(int2(screen) / int(fx_effect_scale), FxEffectSize(fx_effect_scale) - 1);
+    float behind = p.z - fx_effect_depth.Load(int3(texel, 0));
+    if (behind > 0.01 * p.z && behind < thickness) {
+      return 0.0;
+    }
+  }
+  return 1.0;
+}
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
@@ -43,6 +72,8 @@ void main(uint3 id : SV_DispatchThreadID) {
   float3 sun_light =
       fx_sky.Load(int3(0, 0, 0)).rgb * fx_sun_tint.rgb * (fx_sun_volumetric.z * phase);
 
+  bool screen_shadows = fx_sun_cascade_depth[0].z <= 0.0 && fx_sun_cascade_depth[1].z <= 0.0;
+  float shadow_length = 0.25 * fx_sun_volumetric.x;
   float transmittance = 1.0;
   float3 scattered = 0.0;
   float previous_distance = 0.0;
@@ -60,7 +91,12 @@ void main(uint3 id : SV_DispatchThreadID) {
                                                        20.0));
     }
     float lit;
-    FX_SUN_SHADOW(fx_shadow0, fx_shadow1, fx_clamp, position, lit)
+    if (screen_shadows) {
+      lit = FxScreenSunVisibility(position, shadow_length, shadow_length * 0.5,
+                                  frac(jitter + float(i) * 0.618034));
+    } else {
+      FX_SUN_SHADOW(fx_shadow0, fx_shadow1, fx_clamp, position, lit)
+    }
     float step_transmittance = exp(-density * step_length);
     // Energy-conserving: what this segment scatters toward the camera.
     scattered += transmittance * (1.0 - step_transmittance) * lit * sun_light;
