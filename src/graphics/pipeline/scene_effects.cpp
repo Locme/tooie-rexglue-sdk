@@ -201,6 +201,10 @@ REXCVAR_DEFINE_BOOL(scene_fx_dof, false, "GPU/Effects",
 REXCVAR_DEFINE_DOUBLE(scene_fx_dof_strength, 0.8, "GPU/Effects",
                       "Cutscene depth of field strength (0...1)")
     .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_photo_mode, false, "GPU/Effects",
+                    "Set by a game's photo mode: the cutscene-only effects (depth of field, "
+                    "focused on the center of the screen, and the vignette and grain) apply "
+                    "outside cutscenes too") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_rim, false, "GPU/Effects",
                     "Rim light: a soft sky-colored glow along the silhouettes of an 8-bit scene, "
                     "as if lit from behind (before the HUD)") REX_SCENE_FX_LIVE;
@@ -2079,7 +2083,8 @@ void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rec
   bool add = fog_enabled_ || volumetrics_computed_ || reflections_computed_;
   bool bloom = sdr && REXCVAR_GET(scene_fx_bloom);
   bool outlines = sdr && (REXCVAR_GET(scene_fx_toon) || REXCVAR_GET(scene_fx_rim));
-  bool dof = sdr && REXCVAR_GET(scene_fx_dof) && IsLetterboxed(scene_height_);
+  bool dof = sdr && REXCVAR_GET(scene_fx_dof) &&
+             (REXCVAR_GET(scene_fx_photo_mode) || IsLetterboxed(scene_height_));
   bloom_computed_ = false;
   dof_computed_ = false;
   if (!multiply && !add && !bloom && !outlines && !dof) {
@@ -2138,7 +2143,8 @@ void SceneEffects::ApplyImageEffects(RenderTarget& color_rt, const Rect& rect, u
     area = last_frame_scene_rect_;
   }
   bool letterboxed = IsLetterboxed(height);
-  bool cinematic = REXCVAR_GET(scene_fx_cinematic) && letterboxed;
+  bool cinematic =
+      REXCVAR_GET(scene_fx_cinematic) && (letterboxed || REXCVAR_GET(scene_fx_photo_mode));
   float brightness = float(REXCVAR_GET(scene_fx_brightness)) * 0.01f;
   if (!sharpen && !grading && !smaa && !retro_color && !crt && colorblind <= 0 && !cinematic &&
       brightness == 1.0f) {
