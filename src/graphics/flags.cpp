@@ -25,6 +25,9 @@ REXCVAR_DEFINE_BOOL(gamma_render_target_as_unorm16, true, "GPU",
                     "Use R16G16B16A16_UNORM for gamma render targets (more accurate than sRGB)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(dump_shaders, "", "GPU", "Path to dump shaders to");
+REXCVAR_DEFINE_DOUBLE(display_gamma, 1.0, "GPU",
+                      "Picture brightness on top of the game's gamma ramp: out = in ^ (1 / value); "
+                      "above 1 is brighter, below 1 darker (live)");
 REXCVAR_DEFINE_BOOL(use_fuzzy_alpha_epsilon, false, "GPU",
                     "Use approximate compare for alpha test values to prevent "
                     "flickering on NVIDIA graphics cards");
