@@ -9,6 +9,7 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <rex/graphics/pipeline/texture/files.h>
 #include <algorithm>
 #include <cstdarg>
 #include <cstring>
@@ -3481,6 +3482,12 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
     // Submission already closed now, so minus 1.
     closed_frame_submissions_[(frame_current_++) % kQueueFrames] = submission_current_ - 1;
 
+    // texture_replacements reload (texture_files::RequestReload).
+    static uint64_t texture_reload_seen = 0;
+    if (texture_files::ReloadGeneration() != texture_reload_seen) {
+      texture_reload_seen = texture_files::ReloadGeneration();
+      ClearCaches();
+    }
     if (cache_clear_requested_ && AwaitAllQueueOperationsCompletion()) {
       cache_clear_requested_ = false;
 
