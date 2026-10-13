@@ -395,6 +395,20 @@ void EffectsDialog::OnDraw(ImGuiIO& /*io*/) {
     ImGui::PopID();
   }
 
+  if (HasCvar("scene_fx_caustics") &&
+      EffectHeader("Underwater Caustics", "scene_fx_caustics")) {
+    ImGui::PushID("caustics");
+    Description(
+        "Moving lines of light on the ground and a gentle wobble of the picture while the camera "
+        "is underwater. Before the HUD.");
+    SliderCvar("Brightness", "scene_fx_caustics_strength", 0.0f, 1.0f);
+    SliderCvar("Pattern size (m)", "scene_fx_caustics_size", 0.5f, 20.0f, "%.1f",
+               ImGuiSliderFlags_Logarithmic);
+    SliderCvar("Distortion", "scene_fx_caustics_distortion", 0.0f, 1.0f);
+    CheckboxCvar("Always on (to preview it)", "scene_fx_underwater_force");
+    ImGui::PopID();
+  }
+
   if (EffectHeader("16-bit Effects", "scene_fx_16bit")) {
     ImGui::PushID("16bit");
     Description(

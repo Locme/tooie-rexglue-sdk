@@ -363,6 +363,8 @@ class SceneEffects {
   static void ParseColor(const char* color, float color_out[3]);
   // The underwater tint is on and the camera is underwater.
   static bool Underwater();
+  // Underwater caustics and distortion are on and the camera is underwater.
+  static bool Caustics();
   // Water reflections are on and the game gave a water level.
   static bool WaterReflectionsWanted();
   // scene_fx_sun_direction, normalized; false when unset or unparsable.
@@ -499,7 +501,7 @@ class SceneEffects {
   Texture volumetric_result_ = Texture::kVolumetric;
   // The composite's extra constants for this frame (the fog's, and the
   // effects' strengths).
-  float composite_constants_[9][4] = {};
+  float composite_constants_[13][4] = {};
 
   Camera camera_ = {};
   bool camera_logged_ = false;

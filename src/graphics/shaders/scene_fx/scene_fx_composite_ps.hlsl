@@ -59,7 +59,33 @@ FX_EXTRA_CONSTANTS_BLOCK(12) {
   float4 fx_effect_strengths_3;
   // rgb = the underwater tint's color.
   float4 fx_underwater_color;
+  // World horizontal axes from view space (xyz = view space direction, w =
+  // the camera's coordinate), for the caustics.
+  float4 fx_world_axis_a;
+  float4 fx_world_axis_b;
+  // x = caustics strength, y = distortion strength, z = seconds (wrapped),
+  // w = caustics cell size (world units).
+  float4 fx_caustics;
+  // This draw's rectangle in render target pixels (left, top, right, bottom,
+  // inclusive), for the distortion's samples.
+  float4 fx_draw_rect;
 };
+
+// Caustics (0...1, sharp bright lines): light focused by the waves above
+// onto a point at world position p (in cells of 2 pi), at time t.
+float FxCaustics(float2 p, float t) {
+  float2 i = p;
+  float c = 1.0;
+  const float kIntensity = 0.005;
+  [unroll] for (int n = 0; n < 4; ++n) {
+    float tt = t * (1.0 - 3.5 / float(n + 1));
+    i = p + float2(cos(tt - i.x) + sin(tt + i.y), sin(tt - i.y) + cos(tt + i.x));
+    c += 1.0 / length(float2(p.x / (sin(i.x + tt) / kIntensity),
+                             p.y / (cos(i.y + tt) / kIntensity)));
+  }
+  c = 1.17 - pow(c / 4.0, 1.4);
+  return saturate(pow(abs(c), 8.0));
+}
 
 // An effect at fx_effect_scale at this pixel: the pixel itself at full
 // resolution, otherwise the joint bilateral upsampling.
@@ -186,7 +212,19 @@ float FxFogOpticalDepth(float3 direction, float distance) {
 float4 main(float4 position : SV_Position) : SV_Target {
   float2 screen = position.xy * fx_output_scale + float2(fx_screen_offset);
   bool resolve = fx_composite_mode == FX_COMPOSITE_RESOLVE;
-  float3 scene = resolve ? fx_scene_image.Load(int3(int2(position.xy), 0)).rgb : 0.0;
+  // Underwater distortion: the scene seen through moving water, a slow
+  // wobble of a few pixels (in the draw's rectangle).
+  int2 image_pixel = int2(position.xy);
+  if (resolve && (fx_effect_flags & FX_EFFECT_CAUSTICS) && fx_caustics.y > 0.0) {
+    float amplitude = fx_caustics.y * 3.0 * float(fx_scene_size.y) / 720.0;
+    float t = fx_caustics.z;
+    float2 uv = screen / float(fx_scene_size.y);
+    float2 offset = float2(sin(uv.y * 23.0 + t * 1.7) + 0.5 * sin(uv.y * 41.0 - t * 2.3),
+                           cos(uv.x * 19.0 + t * 1.3) + 0.5 * cos(uv.x * 37.0 + t * 2.9)) *
+                    (amplitude / 1.5);
+    image_pixel = clamp(int2(position.xy + offset), int2(fx_draw_rect.xy), int2(fx_draw_rect.zw));
+  }
+  float3 scene = resolve ? fx_scene_image.Load(int3(image_pixel, 0)).rgb : 0.0;
   // Unchanged for either blend.
   float4 identity = fx_composite_mode == FX_COMPOSITE_ADD ? 0.0 : 1.0;
   if (fx_debug_mode == FX_DEBUG_SPLIT && screen.x >= 0.5 * float(fx_scene_size.x)) {
@@ -195,6 +233,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
   int2 pixel = clamp(int2(screen), int2(0, 0), int2(fx_scene_size) - 1);
   float depth = fx_depth.Load(int3(pixel, 0));
   bool is_sky = depth >= fx_sky_distance;
+  // The caustics' surface, here so the derivatives aren't in a branch that
+  // differs between neighboring pixels.
+  float3 view_position = FxViewPosition(screen, depth);
+  float3 view_normal = normalize(cross(ddx(view_position), ddy(view_position)) + 1.0e-9);
 
   // The four half-resolution texels around (texel i was computed at scene
   // pixel 2i), weighted bilinearly and by depth similarity.
@@ -373,6 +415,22 @@ float4 main(float4 position : SV_Position) : SV_Target {
       float3 tinted = lerp(saturate(lit) * water, luminance * 1.5 * water, 0.6);
       lit = lerp(lit, tinted, strength);
       lit = lerp(lit, water * (0.5 + 0.3 * luminance), haze * strength);
+    }
+    if ((fx_effect_flags & FX_EFFECT_CAUSTICS) && !is_sky && fx_caustics.x > 0.0) {
+      // Moving lines of light on what faces up, fading with distance (far
+      // away they would only shimmer).
+      float height = dot(fx_fog_height.xyz, view_position);
+      float2 world = float2(dot(fx_world_axis_a.xyz, view_position) + fx_world_axis_a.w,
+                            dot(fx_world_axis_b.xyz, view_position) + fx_world_axis_b.w);
+      float facing_up = saturate(abs(dot(view_normal, fx_fog_height.xyz)) * 1.5 - 0.3);
+      float2 cell = world / max(fx_caustics.w, 1.0e-3) * (2.0 * kFxPi);
+      // A second, slower layer slightly offset, as the waves above cross.
+      float light = FxCaustics(cell + height * 0.002, fx_caustics.z * 0.6) +
+                    0.5 * FxCaustics(cell * 0.7 + float2(1.7, 3.1), fx_caustics.z * 0.45);
+      float fade = 1.0 - smoothstep(fx_caustics.w * 4.0, fx_caustics.w * 16.0, depth);
+      float3 water = (fx_effect_flags & FX_EFFECT_UNDERWATER) ? fx_underwater_color.rgb
+                                                              : float3(0.8, 0.95, 1.0);
+      lit += light * facing_up * fade * fx_caustics.x * (0.35 + 0.65 * saturate(scene)) * water;
     }
     return float4(saturate(lit + FxDither8(position.xy)), 1.0);
   }

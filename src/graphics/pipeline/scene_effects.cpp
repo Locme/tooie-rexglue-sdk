@@ -256,6 +256,21 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_underwater_haze, 0.15, "GPU/Effects",
 // For tests: the underwater tint without the game's word.
 REXCVAR_DEFINE_BOOL(scene_fx_underwater_force, false, "GPU/Effects",
                     "Always apply the underwater tint (testing)") REX_SCENE_FX_LIVE;
+// Underwater caustics and distortion, while the camera is underwater (or with
+// scene_fx_underwater_force).
+REXCVAR_DEFINE_BOOL(scene_fx_caustics, false, "GPU/Effects",
+                    "Underwater caustics and distortion: moving lines of light on the ground "
+                    "and a gentle wobble of the picture while the camera is underwater (before "
+                    "the HUD)") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_caustics_strength, 0.5, "GPU/Effects",
+                      "Underwater caustics brightness (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_caustics_size, 3.0, "GPU/Effects",
+                      "Underwater caustics pattern size in meters")
+    .range(0.5, 20.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_caustics_distortion, 0.4, "GPU/Effects",
+                      "Underwater distortion strength (0 = none, 1 = about 3 pixels at 720p)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_timing, false, "GPU/Effects",
                     "Measure the GPU time of each effect (shown in the debug overlay, F3)")
     REX_SCENE_FX_LIVE;
@@ -454,6 +469,7 @@ constexpr uint32_t kEffectOutlines = 128;
 constexpr uint32_t kEffectDof = 256;
 constexpr uint32_t kEffectRim = 512;
 constexpr uint32_t kEffectUnderwater = 2048;
+constexpr uint32_t kEffectCaustics = 4096;
 constexpr int32_t kDebugSplit = 1;
 constexpr uint32_t kCompositeMultiply = 0;
 constexpr uint32_t kCompositeAdd = 1;
@@ -588,7 +604,8 @@ bool SceneEffects::AnySceneEffectEnabled() {
          REXCVAR_GET(scene_fx_volumetrics) || REXCVAR_GET(scene_fx_fog) ||
          REXCVAR_GET(scene_fx_bloom) || REXCVAR_GET(scene_fx_toon) ||
          REXCVAR_GET(scene_fx_dof) || REXCVAR_GET(scene_fx_rim) ||
-         REXCVAR_GET(scene_fx_underwater) || REXCVAR_GET(scene_fx_water_reflections);
+         REXCVAR_GET(scene_fx_underwater) || REXCVAR_GET(scene_fx_water_reflections) ||
+         REXCVAR_GET(scene_fx_caustics);
 }
 
 bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
@@ -1899,11 +1916,30 @@ bool SceneEffects::FillFogConstants() {
   composite_constants_[7][2] = float(REXCVAR_GET(scene_fx_underwater_strength));
   composite_constants_[7][3] = WorldDensity(REXCVAR_GET(scene_fx_underwater_haze));
   ParseColor(REXCVAR_GET(scene_fx_underwater_color).c_str(), composite_constants_[8]);
+  composite_constants_[11][0] = float(REXCVAR_GET(scene_fx_caustics_strength));
+  composite_constants_[11][1] = float(REXCVAR_GET(scene_fx_caustics_distortion));
+  {
+    // Seconds, wrapped every 20 minutes to keep float precision (the pattern
+    // jumps once then).
+    static const auto start = std::chrono::steady_clock::now();
+    double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    composite_constants_[11][2] = float(std::fmod(seconds, 1200.0));
+  }
+  composite_constants_[11][3] = WorldLength(REXCVAR_GET(scene_fx_caustics_size));
   CameraBasis basis;
   if (!camera_.has_matrix || !GetCameraBasis(camera_.rows, basis)) {
     return false;
   }
   GetHeightRow(basis, composite_constants_[0]);
+  // The two world axes across the up axis, for the caustics' pattern.
+  for (uint32_t row = 0; row < 2; ++row) {
+    uint32_t axis = (basis.up_axis + 1 + row) % 3;
+    composite_constants_[9 + row][0] = basis.right[axis];
+    composite_constants_[9 + row][1] = basis.up[axis];
+    composite_constants_[9 + row][2] = basis.forward[axis];
+    composite_constants_[9 + row][3] = basis.position[axis];
+  }
   composite_constants_[1][0] = WorldDensity(REXCVAR_GET(scene_fx_fog_ground_density));
   composite_constants_[1][1] =
       composite_constants_[0][3] + WorldLength(REXCVAR_GET(scene_fx_fog_ground_height));
@@ -2007,7 +2043,13 @@ void SceneEffects::Composite(RenderTarget& color_rt, const Rect& rect, int32_t s
                                 ? kEffectRim
                                 : 0) |
                            (draw == Draw::kCompositeResolve && Underwater() ? kEffectUnderwater
-                                                                             : 0);
+                                                                             : 0) |
+                           (draw == Draw::kCompositeResolve && Caustics() ? kEffectCaustics : 0);
+  // The distortion's samples stay in this draw's rectangle.
+  composite_constants_[12][0] = float(rect.left);
+  composite_constants_[12][1] = float(rect.top);
+  composite_constants_[12][2] = float(std::max(rect.right - 1, rect.left));
+  composite_constants_[12][3] = float(std::max(rect.bottom - 1, rect.top));
   constants.composite_mode = draw == Draw::kCompositeAdd       ? kCompositeAdd
                              : draw == Draw::kCompositeDebug   ? kCompositeDebug
                              : draw == Draw::kCompositeResolve ? kCompositeResolve
@@ -2102,6 +2144,11 @@ bool SceneEffects::ComputeSceneBlur(const Rect& rect, int32_t screen_offset_x,
 
 bool SceneEffects::Underwater() {
   return REXCVAR_GET(scene_fx_underwater) &&
+         (REXCVAR_GET(scene_fx_underwater_force) || rex::system::GetSceneUnderwater());
+}
+
+bool SceneEffects::Caustics() {
+  return REXCVAR_GET(scene_fx_caustics) &&
          (REXCVAR_GET(scene_fx_underwater_force) || rex::system::GetSceneUnderwater());
 }
 
@@ -2230,7 +2277,7 @@ void SceneEffects::CompositeEffects(RenderTarget& color_rt, const Rect& tile_rec
   bool bloom = sdr && REXCVAR_GET(scene_fx_bloom);
   // Everything that reads the scene's neighborhoods or recolors it.
   bool outlines = sdr && (REXCVAR_GET(scene_fx_toon) || REXCVAR_GET(scene_fx_rim) ||
-                          Underwater());
+                          Underwater() || Caustics());
   bool dof = sdr && REXCVAR_GET(scene_fx_dof) &&
              (REXCVAR_GET(scene_fx_photo_mode) || IsLetterboxed(scene_height_));
   bloom_computed_ = false;

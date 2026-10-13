@@ -35,6 +35,7 @@
 #define FX_EFFECT_DOF 256u
 #define FX_EFFECT_RIM 512u
 #define FX_EFFECT_UNDERWATER 2048u
+#define FX_EFFECT_CAUSTICS 4096u
 // Depth copy: only where the depth copied so far is the sky.
 
 // scene_fx_debug.
