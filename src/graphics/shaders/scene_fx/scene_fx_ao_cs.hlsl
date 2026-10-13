@@ -119,7 +119,10 @@ void main(uint3 id : SV_DispatchThreadID) {
   float3 down = FxCenterViewPosition(texel + int2(0, 1)) - position;
   float3 up = position - FxCenterViewPosition(texel - int2(0, 1));
   float3 dx = abs(right.z) < abs(left.z) ? right : left;
-  float3 dy = abs(down.z) < abs(up.z) ? down : up;
+  // Not toward the rows below the tile being drawn (see the samples below).
+  bool down_drawn = !fx_pass_rect.w ||
+                    FxEffectScreen(texel + int2(0, 1), fx_effect_scale).y < float(fx_pass_rect.w);
+  float3 dy = down_drawn && abs(down.z) < abs(up.z) ? down : up;
   float3 normal = normalize(cross(dx, dy));
   float3 view = normalize(-position);
   if (dot(normal, view) < 0.0) {
@@ -190,8 +193,12 @@ void main(uint3 id : SV_DispatchThreadID) {
                         finest_level);
         [unroll] for (uint side = 0; side < 2; ++side) {
           float2 sample_screen = screen + (side ? -offset_screen : offset_screen);
-          // Nothing is known beyond the screen's edges.
-          if (any(sample_screen < 0.0) || any(sample_screen >= float2(fx_scene_size))) {
+          // Nothing is known beyond the screen's edges, nor below the tile
+          // being drawn (fx_pass_rect.w rows drawn, 0 = all): the depth
+          // there is the previous frame's, and occluders guessed from it
+          // drew a dark line along each tile's lower edge.
+          if (any(sample_screen < 0.0) || any(sample_screen >= float2(fx_scene_size)) ||
+              (fx_pass_rect.w && sample_screen.y >= float(fx_pass_rect.w))) {
             continue;
           }
           float3 sample_position = FxSampleViewPosition(sample_screen, level);

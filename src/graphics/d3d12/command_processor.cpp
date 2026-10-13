@@ -2361,6 +2361,27 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
     // A sprite: not in the depth the scene effects see.
     normalized_depth_control.z_write_enable = 0;
   }
+  // The scene effects' material tagging: the stencil reference and masks
+  // are read from the registers below, so they're replaced there for this
+  // draw only.
+  SceneEffects::StencilRefMaskOverride stencil_override(*register_file_);
+  if (scene_effects_ && is_rasterization_done &&
+      scene_effects_->MaterialTaggingActive(texture_cache_->HasMaterials())) {
+    uint32_t fetch_mask = 0;
+    if (pixel_shader) {
+      for (const Shader::TextureBinding& binding : pixel_shader->texture_bindings()) {
+        fetch_mask |= UINT32_C(1) << binding.fetch_constant;
+      }
+    }
+    auto front = regs.Get<reg::RB_STENCILREFMASK>();
+    auto back = regs.Get<reg::RB_STENCILREFMASK>(XE_GPU_REG_RB_STENCILREFMASK_BF);
+    uint8_t material = scene_effects_->DrawMaterial(
+        texture_cache_->FindMaterial(fetch_mask), fetch_mask != 0,
+        vertex_shader ? vertex_shader->ucode_data_hash() : 0);
+    if (SceneEffects::TagMaterial(material, normalized_depth_control, front, back)) {
+      stencil_override.Set(front, back);
+    }
+  }
 
   // Shader modifications.
   uint32_t ps_param_gen_pos = UINT32_MAX;

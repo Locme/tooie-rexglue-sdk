@@ -12,6 +12,11 @@
 // planes from above before reaching the surface in the depth buffer, it
 // reflects about the plane's normal, rippled, and what it misses reflects the
 // sky. Intensities are applied here: the composite adds as is.
+//
+// Materials (texture_materials): with the materials tagged, only those
+// reflect, each as much as it should (water and ice a lot, stone not at all),
+// and an upward tagged surface sees the sky where nothing on the screen is in
+// the way; without, every surface a little.
 
 #include "scene_fx_common.hlsli"
 
@@ -23,8 +28,10 @@ FX_BINDING(1) Texture2D<float> fx_depth : register(t1);
 FX_BINDING(2) Texture2D<float4> fx_previous_color : register(t2);
 // 1x1 sky color (a = valid).
 FX_BINDING(3) Texture2D<float4> fx_sky : register(t3);
-FX_BINDING(4) SamplerState fx_clamp : register(s0);
-FX_EXTRA_CONSTANTS_BLOCK(5) {
+// Full resolution, TextureCache::Material (0 = unknown).
+FX_BINDING(4) Texture2D<float> fx_material : register(t4);
+FX_BINDING(5) SamplerState fx_clamp : register(s0);
+FX_EXTRA_CONSTANTS_BLOCK(6) {
   // View space position this frame to the previous frame's clip space.
   float4 fx_ssr_reproject[4];
   // xyz = world up in view space, w = 1 to reflect only on floors.
@@ -41,8 +48,30 @@ FX_EXTRA_CONSTANTS_BLOCK(5) {
   // position along them (w), for the ripples.
   float4 fx_ssr_water_u;
   float4 fx_ssr_water_v;
+  // x = 1 for only the tagged materials to reflect, y = 1 to show the
+  // materials instead.
+  float4 fx_ssr_materials;
 };
-FX_BINDING(6) FX_FORMAT_RGBA16F RWTexture2D<float4> fx_reflections : register(u0);
+FX_BINDING(7) FX_FORMAT_RGBA16F RWTexture2D<float4> fx_reflections : register(u0);
+
+// Per TextureCache::Material: x = reflectance facing it (Fresnel F0), y =
+// strength; and its color in the debug view.
+static const float2 kFxMaterialReflection[7] = {
+    float2(0.0, 0.0),    // unknown
+    // Far more than real water's 0.02: added over the game's own color (the
+    // composite only adds light), a real-world amount barely shows.
+    float2(0.35, 1.0),   // water
+    float2(0.25, 1.0),   // ice
+    float2(0.6, 0.8),    // metal
+    float2(0.2, 1.0),    // glass
+    float2(0.1, 0.8),    // polished
+    float2(0.0, 0.0),    // character
+};
+static const float3 kFxMaterialColor[7] = {
+    float3(0.0, 0.0, 0.0), float3(0.1, 0.3, 1.0), float3(0.4, 1.0, 1.0),
+    float3(1.0, 0.8, 0.1), float3(0.2, 1.0, 0.3), float3(1.0, 0.2, 1.0),
+    float3(1.0, 0.4, 0.1),
+};
 
 float FxEffectDistance(int2 texel) {
   texel = clamp(texel, int2(0, 0), FxEffectSize(fx_effect_scale) - 1);
@@ -66,12 +95,21 @@ float FxSceneDistance(float2 screen) {
   return fx_depth.Load(int3(pixel, 0));
 }
 
+uint FxMaterial(int2 texel) {
+  int2 pixel = min(int2(FxEffectScreen(texel, fx_effect_scale)), int2(fx_scene_size) - 1);
+  return min(uint(fx_material.Load(int3(pixel, 0)) + 0.5), 6u);
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
   if (any(int2(id.xy) >= FxEffectSize(fx_effect_scale))) {
     return;
   }
   int2 texel = int2(id.xy);
+  if (fx_ssr_materials.y > 0.0) {
+    fx_reflections[texel] = float4(kFxMaterialColor[FxMaterial(texel)], 1.0);
+    return;
+  }
   float3 position = FxEffectPosition(texel);
   bool is_sky = position.z >= fx_sky_distance;
   float3 view = normalize(position);
@@ -113,6 +151,13 @@ void main(uint3 id : SV_DispatchThreadID) {
       strength = fx_ssr_water.y;
     }
   }
+  bool tagged = false;
+  if (!water && fx_ssr_materials.x > 0.0) {
+    uint material = FxMaterial(texel);
+    tagged = material != 0u;
+    reflectance = kFxMaterialReflection[material].x;
+    strength *= kFxMaterialReflection[material].y;
+  }
   if (!water) {
     if (strength <= 0.0 || is_sky) {
       fx_reflections[texel] = 0.0;
@@ -137,9 +182,11 @@ void main(uint3 id : SV_DispatchThreadID) {
   float3 direction = reflect(view, normal);
   // Schlick's Fresnel.
   float fresnel = reflectance + (1.0 - reflectance) * pow(1.0 - saturate(dot(-view, normal)), 5.0);
-  // The sky, for water rays that hit nothing (going up, nothing above).
+  // The sky, for rays that hit nothing (going up, nothing above): water, and
+  // tagged surfaces facing up, faded in from the horizon.
   float4 sky = fx_sky.Load(int3(0, 0, 0));
-  float3 sky_light = water && sky.a > 0.0 ? sky.rgb * fresnel * strength : 0.0;
+  float sky_view = water ? 1.0 : (tagged ? saturate(dot(direction, up_axis) * 4.0) : 0.0);
+  float3 sky_light = sky.a > 0.0 ? sky.rgb * (fresnel * strength * sky_view) : 0.0;
   // Toward the camera: whatever it would hit is mostly off screen.
   if (direction.z < -0.2 || fresnel < 0.01) {
     fx_reflections[texel] = float4(sky_light, 0.0);

@@ -33,6 +33,8 @@
     /* Contact shadows: x = ray length, y = thickness, z = step count,          \
        w = strength. */                                                         \
     float4 fx_sun_contact;                                                         \
+    /* x = 1 to leave the characters (TextureCache::Material) unshadowed. */    \
+    float4 fx_sun_material;                                                        \
   };
 
 // Fraction of the sun reaching the position through the cascade, filtered over

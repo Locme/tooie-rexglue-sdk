@@ -11,9 +11,13 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <utility>
 
 #include <rex/assert.h>
+#include <rex/math.h>
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
 #include <rex/dbg.h>
@@ -90,6 +94,12 @@ REXCVAR_DEFINE_STRING(texture_replacements, "", "GPU",
                       "the dump_textures files; loaded in place of the game's textures "
                       "(may be larger and have more mip levels). Several folders may be "
                       "given separated by ';', the first one holding a file wins.");
+REXCVAR_DEFINE_STRING(texture_materials, "", "GPU",
+                      "Text files saying what surfaces drawn with a texture are made of, for "
+                      "the scene effects (reflections): one '<texture> <material>' per line, "
+                      "the texture as its dump_textures name or just its hash, the material "
+                      "one of water, ice, metal, glass, polished, character; '#' starts a "
+                      "comment. Several files may be given separated by ';'.");
 REXCVAR_DEFINE_INT32(texture_upscale, 1, "GPU",
                      "Upscale the game's 8-bit RGBA textures 2 or 4 times with an edge-directed "
                      "scaler (xBR-style) when no replacement file exists; 1 = off. Needs "
@@ -595,6 +605,133 @@ std::shared_ptr<const texture_files::Replacement> TextureCache::FindReplacement(
   return replacement;
 }
 
+const char* TextureCache::GetMaterialName(Material material) {
+  switch (material) {
+    case Material::kWater:
+      return "water";
+    case Material::kIce:
+      return "ice";
+    case Material::kMetal:
+      return "metal";
+    case Material::kGlass:
+      return "glass";
+    case Material::kPolished:
+      return "polished";
+    case Material::kCharacter:
+      return "character";
+    default:
+      return "unknown";
+  }
+}
+
+void TextureCache::LoadMaterialsIfNeeded() {
+  const std::string& source = REXCVAR_GET(texture_materials);
+  if (materials_loaded_ && source == materials_source_) {
+    return;
+  }
+  materials_loaded_ = true;
+  materials_source_ = source;
+  materials_.clear();
+  size_t start = 0;
+  while (start < source.size()) {
+    size_t end = source.find(';', start);
+    if (end == std::string::npos) {
+      end = source.size();
+    }
+    std::string path = source.substr(start, end - start);
+    start = end + 1;
+    if (path.empty()) {
+      continue;
+    }
+    std::ifstream file{std::filesystem::path(path)};
+    if (!file) {
+      REXGPU_WARN("Texture materials: {} not found", path);
+      continue;
+    }
+    std::string line;
+    size_t count = 0;
+    while (std::getline(file, line)) {
+      size_t comment = line.find('#');
+      if (comment != std::string::npos) {
+        line.resize(comment);
+      }
+      std::istringstream fields(line);
+      std::string texture, name;
+      if (!(fields >> texture >> name)) {
+        continue;
+      }
+      // The hash: the name's last 16 hex digits (k_8_8_8_8_64x64_<hash>.dds).
+      size_t dot = texture.rfind('.');
+      if (dot != std::string::npos) {
+        texture.resize(dot);
+      }
+      size_t underscore = texture.rfind('_');
+      if (underscore != std::string::npos) {
+        texture = texture.substr(underscore + 1);
+      }
+      uint8_t material = 0;
+      for (uint8_t i = 1; i < uint8_t(Material::kCount); ++i) {
+        if (name == GetMaterialName(Material(i))) {
+          material = i;
+        }
+      }
+      char* hash_end = nullptr;
+      uint64_t hash = std::strtoull(texture.c_str(), &hash_end, 16);
+      if (!material || texture.empty() || *hash_end) {
+        REXGPU_WARN("Texture materials: {}: \"{}\" not understood", path, line);
+        continue;
+      }
+      materials_[hash] = material;
+      ++count;
+    }
+    REXGPU_INFO("Texture materials: {} textures from {}", count, path);
+  }
+}
+
+bool TextureCache::HasMaterials() {
+  LoadMaterialsIfNeeded();
+  return !materials_.empty();
+}
+
+uint8_t TextureCache::LookUpMaterial(const TextureKey& key, uint64_t known_hash) {
+  if (!HasMaterials()) {
+    return 0;
+  }
+  uint64_t hash = known_hash;
+  if (!hash) {
+    texture_files::Description description;
+    const uint8_t* guest_base;
+    uint32_t guest_base_size;
+    if (key.dimension != xenos::DataDimension::k2DOrStacked ||
+        !GetFileDescription(key, description, guest_base, guest_base_size)) {
+      return 0;
+    }
+    hash = texture_files::HashGuestBase(guest_base, guest_base_size, description);
+  }
+  auto it = materials_.find(hash);
+  return it != materials_.end() ? it->second : 0;
+}
+
+uint8_t TextureCache::FindMaterial(uint32_t fetch_constant_mask) {
+  if (!HasMaterials()) {
+    return 0;
+  }
+  uint32_t index;
+  while (rex::bit_scan_forward(fetch_constant_mask, &index)) {
+    fetch_constant_mask &= ~(UINT32_C(1) << index);
+    TextureKey key;
+    BindingInfoFromFetchConstant(register_file_.GetTextureFetch(index), key, nullptr);
+    if (!key.is_valid) {
+      continue;
+    }
+    auto it = textures_.find(key);
+    if (it != textures_.end() && it->second->material()) {
+      return it->second->material();
+    }
+  }
+  return 0;
+}
+
 void TextureCache::RejectReplacement(const char* reason) {
   if (!creating_replacement_) {
     return;
@@ -850,6 +987,7 @@ TextureCache::Texture::Texture(TextureCache& texture_cache, const TextureKey& ke
       guest_layout_(key.GetGuestLayout()),
       replacement_(texture_cache.creating_replacement_),
       file_swizzle_(texture_cache.creating_swizzle_),
+      material_(texture_cache.creating_material_),
       last_usage_submission_index_(texture_cache.current_submission_index_),
       last_usage_time_(texture_cache.current_submission_time_),
       used_previous_(track_usage ? texture_cache.texture_used_last_ : nullptr),
@@ -1079,6 +1217,7 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
   {
     uint64_t replacement_hash = 0;
     creating_replacement_ = FindReplacement(key, &replacement_hash);
+    creating_material_ = LookUpMaterial(key, replacement_hash);
     std::unique_ptr<Texture> new_texture = CreateTexture(key);
     if (new_texture && new_texture->replacement()) {
       REXGPU_INFO("Texture replacement: {} ({}x{} format {}) replaced by a {}x{} file with {} "
@@ -1088,6 +1227,7 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
                   new_texture->replacement()->height, new_texture->replacement()->mip_count);
     }
     creating_replacement_.reset();
+    creating_material_ = 0;
     if (!new_texture) {
       key.LogAction("Failed to create");
       return nullptr;

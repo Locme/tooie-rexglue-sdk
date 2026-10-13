@@ -50,6 +50,8 @@ namespace shaders {
 #include "../shaders/vulkan_spirv/scene_fx_smaa_weights_cs.h"
 #include "../shaders/vulkan_spirv/scene_fx_bloom_prefilter_cs.h"
 #include "../shaders/vulkan_spirv/scene_fx_bloom_blur_cs.h"
+#include "../shaders/vulkan_spirv/scene_fx_material_copy_cs.h"
+#include "../shaders/vulkan_spirv/scene_fx_material_copy_msaa_cs.h"
 #include "../shaders/vulkan_spirv/scene_fx_exposure_measure_cs.h"
 #include "../shaders/vulkan_spirv/scene_fx_exposure_adapt_cs.h"
 #include "../shaders/vulkan_spirv/scene_fx_temporal_cs.h"
@@ -89,6 +91,8 @@ const ShaderCode kComputeShaders[] = {
     REX_SCENE_FX_SHADER(scene_fx_smaa_blend_cs),
     REX_SCENE_FX_SHADER(scene_fx_bloom_prefilter_cs),
     REX_SCENE_FX_SHADER(scene_fx_bloom_blur_cs),
+    REX_SCENE_FX_SHADER(scene_fx_material_copy_cs),
+    REX_SCENE_FX_SHADER(scene_fx_material_copy_msaa_cs),
     REX_SCENE_FX_SHADER(scene_fx_exposure_measure_cs),
     REX_SCENE_FX_SHADER(scene_fx_exposure_adapt_cs),
 };
@@ -614,10 +618,11 @@ void VulkanSceneEffects::UseRenderTarget(RenderTarget& render_target,
 VkDescriptorImageInfo VulkanSceneEffects::GetSourceInfo(const Source& source) const {
   VkDescriptorImageInfo info = {};
   if (source.render_target) {
-    // For depth, the depth aspect alone; for color, the float drawing view.
+    // For depth, the depth (or stencil) aspect alone; for color, the float
+    // drawing view.
     auto& vulkan_rt =
         static_cast<const VulkanRenderTargetCache::VulkanRenderTarget&>(*source.render_target);
-    info.imageView = vulkan_rt.view_depth_color();
+    info.imageView = source.stencil ? vulkan_rt.view_stencil() : vulkan_rt.view_depth_color();
     info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   } else {
     info.imageView = textures_[size_t(source.texture)].sampled_view;

@@ -17,6 +17,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <utility>
 
 #include <chrono>
 #include <cmath>
@@ -25,6 +27,7 @@
 #include <rex/system/effect_timings.h>
 #include <rex/system/scene_camera.h>
 #include <rex/system/scene_hints.h>
+#include <rex/graphics/pipeline/texture/cache.h>
 #include <rex/graphics/registers.h>
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
@@ -67,6 +70,9 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_gi_intensity, 1.0, "GPU/Effects", "Global illumin
 REXCVAR_DEFINE_BOOL(scene_fx_contact_shadows, true, "GPU/Effects",
                     "Contact shadows: fine sun shadows the game's shadow maps miss")
     REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_BOOL(scene_fx_contact_shadows_characters, true, "GPU/Effects",
+                    "Contact shadows on the characters too (false: not on what's drawn with "
+                    "the textures texture_materials calls 'character')") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_contact_shadows_length, 0.5, "GPU/Effects",
                       "Contact shadow ray length in meters")
     .range(0.05, 3.0) REX_SCENE_FX_LIVE;
@@ -160,6 +166,16 @@ REXCVAR_DEFINE_DOUBLE(scene_fx_fog_brightness, 1.0, "GPU/Effects",
 REXCVAR_DEFINE_DOUBLE(scene_fx_fog_sun_glow, 0.5, "GPU/Effects",
                       "Sunlight the fog scatters (glow toward the sun)")
     .range(0.0, 4.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_fog_start, 0.0, "GPU/Effects",
+                      "Clear air around the camera: meters (along the ground) before the fog "
+                      "starts")
+    .range(0.0, 500.0) REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_STRING(scene_fx_fog_color, "auto", "GPU/Effects",
+                      "Fog color: auto (the sky's), r,g,b (0...1) or one of white, blue, green, "
+                      "purple, orange, red") REX_SCENE_FX_LIVE;
+REXCVAR_DEFINE_DOUBLE(scene_fx_fog_tint, 0.0, "GPU/Effects",
+                      "How much the fog colors the scene in it, not only hazes it (0...1)")
+    .range(0.0, 1.0) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_DOUBLE(scene_fx_fog_distance, 1000.0, "GPU/Effects",
                       "Distance of the sky through the fog, in meters")
     .range(50.0, 20000.0) REX_SCENE_FX_LIVE;
@@ -333,8 +349,10 @@ REXCVAR_DEFINE_INT32(scene_fx_debug, 0, "GPU/Effects",
                      "Effects debug view: 0 = off, 1 = effects on the left half of the screen "
                      "only, 2 = ambient occlusion, 3 = volumetric lighting, 4 = global "
                      "illumination, 5 = fog, 6 = contact shadows, 7 = reflections, 8 = depth "
-                     "(white near, black far, blue sky)")
-    .range(0, 8) REX_SCENE_FX_LIVE;
+                     "(white near, black far, blue sky), 9 = materials (texture_materials: "
+                     "blue water, cyan ice, yellow metal, green glass, magenta polished, "
+                     "orange characters)")
+    .range(0, 9) REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_trace, false, "GPU/Effects",
                     "Log the effects' decisions for one frame, then reset") REX_SCENE_FX_LIVE;
 REXCVAR_DEFINE_BOOL(scene_fx_sprite_depth_write, false, "GPU/Effects",
@@ -394,6 +412,9 @@ struct SunConstants {
   float tint[4];
   float fog[4];
   float contact[4];
+  // x = 1 to leave the characters (TextureCache::Material) without contact
+  // shadows.
+  float material[4];
 };
 
 struct DepthCopyConstants {
@@ -415,6 +436,9 @@ struct ReflectionConstants {
   float water_levels[4];
   float water_u[4];
   float water_v[4];
+  // x = 1 for only the tagged materials to reflect, y = 1 to show the
+  // materials (scene_fx_debug 9).
+  float materials[4];
 };
 
 struct ExposureConstants {
@@ -455,6 +479,7 @@ constexpr uint32_t kEffectDof = 256;
 constexpr uint32_t kEffectRim = 512;
 constexpr uint32_t kEffectUnderwater = 2048;
 constexpr int32_t kDebugSplit = 1;
+constexpr int32_t kDebugMaterials = 9;
 constexpr uint32_t kCompositeMultiply = 0;
 constexpr uint32_t kCompositeAdd = 1;
 constexpr uint32_t kCompositeDebug = 2;
@@ -531,6 +556,7 @@ const SceneEffects::TextureInfo
         {TextureFormat::kRGBA16Float, 1, false},                // kBloom
         {TextureFormat::kRGBA16Float, 1, false},                // kDofBright
         {TextureFormat::kRGBA16Float, 1, false},                // kDof
+        {TextureFormat::kR16Float, 1, true},                    // kMaterial
         {TextureFormat::kRGBA16Float, 1, true},                 // kExposureTiles
         {TextureFormat::kRGBA16Float, 1, true},                 // kExposure0
         {TextureFormat::kRGBA16Float, 1, true},                 // kExposure1
@@ -552,8 +578,8 @@ const SceneEffects::PipelineInfo
         {1, false, false, 1},  // kColorCaptureMsaa
         {1, false, false, 1},  // kColorCopy
         {1, false, false, 1},  // kColorCopyMsaa
-        {4, true, true, 1},    // kContactShadows
-        {4, true, true, 1},    // kReflections
+        {5, true, true, 1},    // kContactShadows
+        {5, true, true, 1},    // kReflections
         {4, true, true, 1},    // kVolumetric
         {3, true, true, 1},    // kTemporal
         {0, false, true, 2},   // kSmaaTables
@@ -562,6 +588,8 @@ const SceneEffects::PipelineInfo
         {2, true, false, 1},   // kSmaaBlend
         {1, false, true, 1},   // kBloomPrefilter
         {1, false, true, 1},   // kBloomBlur
+        {1, false, false, 1},  // kMaterialCopy
+        {1, false, false, 1},  // kMaterialCopyMsaa
         {1, false, true, 1},   // kExposureMeasure
         {2, false, true, 1},   // kExposureAdapt
 };
@@ -604,6 +632,61 @@ bool SceneEffects::SuppressSpriteDepthWrite(uint64_t vertex_shader_hash) {
   // triangles at a time), but through a shader that also draws bigger ones.
   auto it = vertex_shader_max_indices_.find(vertex_shader_hash);
   return it != vertex_shader_max_indices_.end() && it->second <= 6;
+}
+
+bool SceneEffects::MaterialTaggingActive(bool have_materials) {
+  material_tagging_ =
+      have_materials &&
+      (REXCVAR_GET(scene_fx_reflections) || REXCVAR_GET(scene_fx_debug) == kDebugMaterials ||
+       (REXCVAR_GET(scene_fx_contact_shadows) &&
+        !REXCVAR_GET(scene_fx_contact_shadows_characters))) &&
+      AnySceneEffectEnabled();
+  return material_tagging_;
+}
+
+uint8_t SceneEffects::DrawMaterial(uint8_t textures_material, bool textured,
+                                   uint64_t vertex_shader_hash) {
+  constexpr uint8_t kCharacter = uint8_t(TextureCache::Material::kCharacter);
+  uint8_t material = textures_material;
+  if (!material && !textured && last_draw_material_ == kCharacter &&
+      vertex_shader_hash == last_draw_vertex_shader_) {
+    material = kCharacter;
+  }
+  last_draw_material_ = material;
+  last_draw_vertex_shader_ = vertex_shader_hash;
+  return material;
+}
+
+bool SceneEffects::TagMaterial(uint8_t material, reg::RB_DEPTHCONTROL& depth_control,
+                               reg::RB_STENCILREFMASK& front, reg::RB_STENCILREFMASK& back) {
+  if (!depth_control.z_enable && !depth_control.stencil_enable) {
+    // No depth buffer bound for it, possibly the 2D overlays: binding one
+    // could overlap color in the EDRAM.
+    return false;
+  }
+  if (depth_control.stencil_enable) {
+    // The guest's own: one bit.
+    for (reg::RB_STENCILREFMASK* face : {&front, &back}) {
+      face->stencilref = face->stencilref ? 1 : 0;
+      face->stencilmask = face->stencilmask ? 1 : 0;
+      face->stencilwritemask = face->stencilwritemask ? 1 : 0;
+    }
+    return true;
+  }
+  if (!depth_control.z_write_enable && !material) {
+    return false;
+  }
+  depth_control.stencil_enable = 1;
+  depth_control.backface_enable = 0;
+  depth_control.stencilfunc = xenos::CompareFunction::kAlways;
+  depth_control.stencilfail = xenos::StencilOp::kKeep;
+  depth_control.stencilzfail = xenos::StencilOp::kKeep;
+  depth_control.stencilzpass = xenos::StencilOp::kReplace;
+  front.stencilref = uint32_t(material) << 1;
+  front.stencilmask = 0;
+  front.stencilwritemask = 0xFE;
+  back = front;
+  return true;
 }
 
 bool SceneEffects::AnyImageEffectEnabled() {
@@ -906,6 +989,7 @@ void SceneEffects::OnResolve() {
       return;
     }
     if (effects_frame_ != frame) {
+      drawn_rows_ = 0;
       ComputeEffects(*source_rt, rect, screen_offset_x, screen_offset_y, trace);
     }
     if (REXCVAR_GET(scene_fx_gi) || REXCVAR_GET(scene_fx_reflections) ||
@@ -1104,6 +1188,7 @@ void SceneEffects::CompositeSdrSceneTile(RenderTarget& color_rt, RenderTarget* d
     return;
   }
   hdr_frame_ = frame;
+  drawn_rows_ = uint32_t(std::max(screen_rect.bottom, 0));
   ComputeEffects(color_rt, rect, screen_offset_x, screen_offset_y, trace);
   if (REXCVAR_GET(scene_fx_gi) || REXCVAR_GET(scene_fx_reflections) ||
       WaterReflectionsWanted()) {
@@ -1268,6 +1353,11 @@ void SceneEffects::CaptureSceneDepth(RenderTarget& depth_rt, const DrawState* sc
                &constants, &dc, sizeof(dc), width, height)) {
     depth_frame_ = frame;
   }
+  materials_valid_ =
+      material_tagging_ &&
+      Dispatch(msaa ? Pipeline::kMaterialCopyMsaa : Pipeline::kMaterialCopy,
+               {Source::Stencil(&depth_rt)}, {Target(Texture::kMaterial)}, &constants, nullptr, 0,
+               width, height);
 }
 
 void SceneEffects::CaptureCamera(const float rows[4][4]) {
@@ -1617,6 +1707,8 @@ void SceneEffects::FillSunConstants(const CameraBasis& basis, void* constants_ou
   sc.contact[1] = WorldLength(REXCVAR_GET(scene_fx_contact_shadows_thickness));
   sc.contact[2] = float(kContactShadowStepCount);
   sc.contact[3] = float(REXCVAR_GET(scene_fx_contact_shadows_strength));
+  sc.material[0] =
+      materials_valid_ && !REXCVAR_GET(scene_fx_contact_shadows_characters) ? 1.0f : 0.0f;
   std::memcpy(constants_out, &sc, sizeof(sc));
 }
 
@@ -1645,7 +1737,10 @@ void SceneEffects::ComputeEffects(RenderTarget& color_rt, const Rect& rect,
   bool volumetrics = REXCVAR_GET(scene_fx_volumetrics);
 
   PrefilterDepth();
-  if (volumetrics || fog || gi || WaterReflectionsWanted()) {
+  // The reflections of tagged materials show the sky where nothing on the
+  // screen is in the way.
+  if (volumetrics || fog || gi || WaterReflectionsWanted() ||
+      (materials_valid_ && REXCVAR_GET(scene_fx_reflections))) {
     // Only where the 3D was drawn: letterbox bars have the sky's depth too.
     Rect sky_rect = rect;
     if (ClipToSceneDraws(sky_rect)) {
@@ -1665,8 +1760,9 @@ void SceneEffects::ComputeEffects(RenderTarget& color_rt, const Rect& rect,
   }
   {
     TimingScope timing(*this, TimedSection::kReflections);
-    reflections_computed_ =
-        (REXCVAR_GET(scene_fx_reflections) || WaterReflectionsWanted()) && ComputeReflections();
+    reflections_computed_ = (REXCVAR_GET(scene_fx_reflections) || WaterReflectionsWanted() ||
+                             REXCVAR_GET(scene_fx_debug) == kDebugMaterials) &&
+                            ComputeReflections();
   }
   {
     TimingScope timing(*this, TimedSection::kVolumetrics);
@@ -1701,6 +1797,7 @@ void SceneEffects::PrefilterDepth() {
 bool SceneEffects::ComputeAmbientOcclusion(bool global_illumination) {
   FxConstants constants;
   FillConstants(&constants, 0, 0);
+  constants.pass_rect[3] = drawn_rows_;
   uint32_t width = EffectSize(scene_width_, ao_scale_);
   uint32_t height = EffectSize(scene_height_, ao_scale_);
   // The global illumination's light source is the previous frame's scene,
@@ -1743,7 +1840,8 @@ bool SceneEffects::ComputeContactShadows() {
   Texture effect_depth = ao_scale_ == 1 ? DepthTexture() : Texture::kViewDepth;
   static_assert(kMaxShadowCascades == 2);
   if (!Dispatch(Pipeline::kContactShadows,
-                {Source(effect_depth), Source(DepthTexture()), shadows[0], shadows[1]},
+                {Source(effect_depth), Source(DepthTexture()), shadows[0], shadows[1],
+                 Source(Texture::kMaterial)},
                 {Target(Texture::kContactShadows0)}, &constants, &sun, sizeof(sun),
                 EffectSize(scene_width_, ao_scale_), EffectSize(scene_height_, ao_scale_))) {
     return false;
@@ -1770,10 +1868,14 @@ bool SceneEffects::ComputeReflections() {
       float(QualityEntry(kReflectionStepCounts, REXCVAR_GET(scene_fx_reflections_quality)));
   rc.params[2] = WorldLength(REXCVAR_GET(scene_fx_reflections_thickness));
   rc.params[3] = float(REXCVAR_GET(scene_fx_reflections_reflectance));
+  rc.materials[0] = materials_valid_ ? 1.0f : 0.0f;
+  rc.materials[1] = REXCVAR_GET(scene_fx_debug) == kDebugMaterials ? 1.0f : 0.0f;
   // The intensities are applied in the shader (water has its own).
-  // With materials, the reflections are the water's only (L: not everything).
+  // With materials, the reflections are the water's only (L: not everything),
+  // and the surfaces tagged by their textures (texture_materials: ice, metal,
+  // each at its own strength).
   const bool materials = REXCVAR_GET(scene_fx_reflections_materials);
-  rc.water[2] = REXCVAR_GET(scene_fx_reflections) && !materials
+  rc.water[2] = REXCVAR_GET(scene_fx_reflections) && (!materials || materials_valid_)
                     ? float(REXCVAR_GET(scene_fx_reflections_intensity))
                     : 0.0f;
   float water_levels[rex::system::kMaxSceneWaterLevels];
@@ -1808,7 +1910,7 @@ bool SceneEffects::ComputeReflections() {
     rc.water_v[2] = basis.forward[axis_v];
     rc.water_v[3] = basis.position[axis_v];
   }
-  if (rc.water[1] <= 0.0f && rc.water[2] <= 0.0f) {
+  if (rc.water[1] <= 0.0f && rc.water[2] <= 0.0f && rc.materials[1] <= 0.0f) {
     return false;
   }
   Texture sky = sky_index_ ? Texture::kSky1 : Texture::kSky0;
@@ -1818,7 +1920,7 @@ bool SceneEffects::ComputeReflections() {
   Texture previous_color = scene_color_index_ ? Texture::kSceneColor0 : Texture::kSceneColor1;
   if (!Dispatch(Pipeline::kReflections,
                 {Source(Texture::kViewDepth), Source(DepthTexture()), Source(previous_color),
-                 Source(sky)},
+                 Source(sky), Source(Texture::kMaterial)},
                 {Target(Texture::kReflections0)}, &constants, &rc, sizeof(rc),
                 EffectSize(scene_width_, ao_scale_), EffectSize(scene_height_, ao_scale_))) {
     return false;
@@ -1920,6 +2022,22 @@ bool SceneEffects::FillFogConstants() {
   float glow = sun ? float(REXCVAR_GET(scene_fx_fog_sun_glow)) : 0.0f;
   for (uint32_t i = 0; i < 3; ++i) {
     composite_constants_[4][i] = tint[i] * glow;
+  }
+  composite_constants_[4][3] = WorldLength(REXCVAR_GET(scene_fx_fog_start));
+  composite_constants_[7][1] = float(REXCVAR_GET(scene_fx_fog_tint));
+  std::string fog_color = REXCVAR_GET(scene_fx_fog_color);
+  static const std::pair<const char*, const char*> kNamedFogColors[] = {
+      {"white", "0.9,0.9,0.9"},  {"blue", "0.55,0.7,1.0"},   {"green", "0.6,0.9,0.55"},
+      {"purple", "0.7,0.55,1.0"}, {"orange", "1.0,0.7,0.45"}, {"red", "1.0,0.5,0.45"},
+  };
+  for (const auto& [name, rgb] : kNamedFogColors) {
+    if (fog_color == name) {
+      fog_color = rgb;
+    }
+  }
+  if (!fog_color.empty() && fog_color != "auto") {
+    ParseColor(fog_color.c_str(), composite_constants_[9]);
+    composite_constants_[9][3] = 1.0f;
   }
   return true;
 }

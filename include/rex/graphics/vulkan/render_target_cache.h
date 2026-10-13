@@ -323,6 +323,7 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
 
     VkImageView view_depth_color() const { return view_depth_color_; }
     VkImageView view_depth_stencil() const { return view_depth_stencil_; }
+    VkImageView view_stencil() const { return view_stencil_; }
     VkImageView view_color_transfer_separate() const { return view_color_transfer_separate_; }
     VkImageView view_color_transfer() const {
       return view_color_transfer_separate_ != VK_NULL_HANDLE ? view_color_transfer_separate_
