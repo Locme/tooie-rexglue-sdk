@@ -66,7 +66,9 @@ u32 XamInputGetCapabilities_entry(u32 user_index, u32 flags, ppc_ptr_t<X_INPUT_C
   }
 
   auto* is = input_system();
-  return is->GetCapabilities(actual_user_index, flags, caps);
+  const X_RESULT result = is->GetCapabilities(actual_user_index, flags, caps);
+  PollLocalPlayerSignins();
+  return result;
 }
 
 u32 XamInputGetCapabilitiesEx_entry(u32 unk, u32 user_index, u32 flags,
@@ -112,7 +114,9 @@ u32 XamInputGetState_entry(u32 user_index, u32 flags, ppc_ptr_t<X_INPUT_STATE> i
   }
 
   auto* is = input_system();
-  return is->GetState(actual_user_index, input_state);
+  const X_RESULT result = is->GetState(actual_user_index, input_state);
+  PollLocalPlayerSignins();
+  return result;
 }
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/microsoft.directx_sdk.reference.xinputsetstate(v=vs.85).aspx

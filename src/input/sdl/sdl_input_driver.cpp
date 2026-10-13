@@ -9,6 +9,7 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 
@@ -22,6 +23,9 @@
 
 REXCVAR_DEFINE_STRING(hid_mappings_file, "gamecontrollerdb.txt", "Input",
                       "Path to SDL gamecontroller mappings file");
+REXCVAR_DEFINE_INT32(debug_virtual_pads, 0, "Input",
+                     "Tests: plug in this many idle virtual controllers (SDL virtual "
+                     "gamepads) at startup, e.g. 4 for players 1 to 4 without real pads");
 
 namespace rex::input::sdl {
 
@@ -94,6 +98,19 @@ void SDLInputDriver::OnWindowAvailable(rex::ui::Window* window) {
         return;
       }
       SDL_Gamepad_initialized_ = true;
+
+      const int virtual_pads = std::clamp(REXCVAR_GET(debug_virtual_pads), 0, 4);
+      for (int i = 0; i < virtual_pads; i++) {
+        SDL_VirtualJoystickDesc desc;
+        SDL_INIT_INTERFACE(&desc);
+        desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        desc.name = "Virtual test pad";
+        if (!SDL_AttachVirtualJoystick(&desc)) {
+          REXLOG_ERROR("SDL: virtual pad {} not attached: {}", i, SDL_GetError());
+        }
+      }
 
       // Load custom controller mappings if available
       if (!REXCVAR_GET(hid_mappings_file).empty()) {

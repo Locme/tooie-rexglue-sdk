@@ -19,6 +19,11 @@ namespace xam {
 
 bool xeXamIsUIActive();
 
+// Players 2 to 4 (users 1 to 3) are signed in as local profiles while a pad is
+// connected for them ([Kernel] local_players). Sends XN_SYS_SIGNINCHANGED
+// when that changes; called from the input polls.
+void PollLocalPlayerSignins();
+
 rex::runtime::Export* RegisterExport_xam(rex::runtime::Export* export_entry);
 
 // Registration functions, one per file.

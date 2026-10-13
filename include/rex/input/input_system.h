@@ -55,6 +55,9 @@ class InputSystem : public system::IInputSystem {
   /// in degrees (pitch, yaw, roll; see InputDriver::GetDeviceMotion).
   /// X_ERROR_DEVICE_NOT_CONNECTED when none of them has a gyro.
   X_RESULT GetMotion(uint32_t user_index, float out_degrees[3]);
+  /// Whether a pad (or, for user 0, any device) is assigned to the user, as of
+  /// the last poll. Cheap: doesn't re-enumerate.
+  bool IsUserConnected(uint32_t user_index);
 
  private:
   /// Re-enumerates every driver and notifies the assignment when the set

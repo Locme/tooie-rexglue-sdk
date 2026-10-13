@@ -300,6 +300,16 @@ X_RESULT InputSystem::GetMotion(uint32_t user_index, float out_degrees[3]) {
   return any ? X_ERROR_SUCCESS : X_ERROR_DEVICE_NOT_CONNECTED;
 }
 
+bool InputSystem::IsUserConnected(uint32_t user_index) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  if (!assignment_) {
+    return false;
+  }
+  std::vector<DeviceId> ids;
+  assignment_->DevicesForUser(user_index, ids);
+  return !ids.empty();
+}
+
 X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   SCOPE_profile_cpu_f("hid");
